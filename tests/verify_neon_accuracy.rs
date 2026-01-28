@@ -1,0 +1,92 @@
+use lele::kernels::{math, neon, norm, quantization};
+use lele::tensor::TensorView;
+use std::borrow::Cow;
+
+#[test]
+fn test_relu_accuracy() {
+    let input_data = vec![-2.0, -1.0, 0.0, 1.0, 2.0, -0.5, 0.5, 1.5];
+    let input = TensorView {
+        data: Cow::Borrowed(&input_data),
+        shape: Cow::Owned(vec![input_data.len()]),
+    };
+
+    let mut out_scalar = Vec::new();
+    let mut out_neon = Vec::new();
+
+    math::relu(&input, &mut out_scalar);
+    neon::math::relu(&input, &mut out_neon);
+
+    for i in 0..input_data.len() {
+        assert_eq!(out_scalar[i], out_neon[i], "ReLU mismatch at index {}", i);
+    }
+}
+
+#[test]
+fn test_layernorm_accuracy() {
+    let norm_size = 10;
+    let input_data: Vec<f32> = (0..norm_size).map(|x| x as f32).collect();
+    let input = TensorView {
+        data: Cow::Borrowed(&input_data),
+        shape: Cow::Owned(vec![1, norm_size]),
+    };
+
+    let gamma = vec![1.0; norm_size];
+    let beta = vec![0.0; norm_size];
+    let gamma_v = TensorView {
+        data: Cow::Borrowed(&gamma),
+        shape: Cow::Owned(vec![norm_size]),
+    };
+    let beta_v = TensorView {
+        data: Cow::Borrowed(&beta),
+        shape: Cow::Owned(vec![norm_size]),
+    };
+
+    let mut out_scalar = Vec::new();
+    let mut out_neon = Vec::new();
+
+    norm::layer_norm(&input, &gamma_v, &beta_v, -1, 1e-5, &mut out_scalar);
+    neon::normalization::layer_norm(&input, &gamma_v, &beta_v, -1, 1e-5, &mut out_neon);
+
+    for i in 0..norm_size {
+        let diff = (out_scalar[i] - out_neon[i]).abs();
+        assert!(
+            diff < 1e-5,
+            "LayerNorm mismatch at index {}: scalar={}, neon={}, diff={}",
+            i,
+            out_scalar[i],
+            out_neon[i],
+            diff
+        );
+    }
+}
+
+#[test]
+fn test_quantization_accuracy() {
+    let input_data = vec![-10.0, -5.0, 0.0, 5.0, 10.0, 2.0, 3.0, 4.0];
+    let input = TensorView {
+        data: Cow::Borrowed(&input_data),
+        shape: Cow::Owned(vec![input_data.len()]),
+    };
+
+    let mut out_y_s = Vec::new();
+    let mut out_s_s = Vec::new();
+    let mut out_z_s = Vec::new();
+
+    let mut out_y_n = Vec::new();
+    let mut out_s_n = Vec::new();
+    let mut out_z_n = Vec::new();
+
+    quantization::dynamic_quantize_linear(&input, &mut out_y_s, &mut out_s_s, &mut out_z_s);
+    neon::quantization::dynamic_quantize_linear(&input, &mut out_y_n, &mut out_s_n, &mut out_z_n);
+
+    assert!((out_s_s[0] - out_s_n[0]).abs() < 1e-6, "Scale mismatch");
+    assert!((out_z_s[0] - out_z_n[0]).abs() < 1e-6, "ZP mismatch");
+
+    for i in 0..input_data.len() {
+        assert_eq!(
+            out_y_s[i], out_y_n[i],
+            "Quantization mismatch at index {}",
+            i
+        );
+    }
+}

@@ -1,0 +1,12 @@
+Cargo.lock
+/target
+/models
+/src/models/generated/
+/scripts/
+/*.md
+*.onnx
+*.bin
+*.out
+*.tokens.txt
+/.venv
+/*.wav
