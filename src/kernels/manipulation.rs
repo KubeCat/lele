@@ -8,23 +8,36 @@ pub fn concat<'b, 'a>(
     if inputs.is_empty() {
         return TensorView::empty();
     }
-    let non_empty_inputs: Vec<&TensorView<'b>> = inputs
-        .iter()
-        .filter(|inp| !inp.data.is_empty())
-        .copied()
-        .collect();
-    if non_empty_inputs.is_empty() {
-        return TensorView::empty();
+    // Find first non-empty input to establish rank and base out_shape
+    // Optimization: iterate directly to avoid allocating Vec for non_empty_inputs
+    let mut first_non_empty = None;
+    for (i, inp) in inputs.iter().enumerate() {
+        if !inp.data.is_empty() {
+            first_non_empty = Some((i, inp));
+            break;
+        }
     }
-    let ndim = non_empty_inputs[0].dim();
+
+    let (_, first_inp) = match first_non_empty {
+        Some(x) => x,
+        None => return TensorView::empty(),
+    };
+
+    let ndim = first_inp.dim();
     let axis = if axis < 0 {
         (ndim as i64 + axis) as usize
     } else {
         axis as usize
     };
-    let mut out_shape = non_empty_inputs[0].shape.to_vec();
+
+    // Calculate final shape and validate
+    let mut out_shape = first_inp.shape.to_vec();
     out_shape[axis] = 0;
-    for inp in &non_empty_inputs {
+
+    for inp in inputs {
+        if inp.data.is_empty() {
+            continue;
+        }
         assert_eq!(inp.dim(), ndim, "Concat: ranks mismatch");
         for d in 0..ndim {
             if d != axis {
@@ -33,29 +46,39 @@ pub fn concat<'b, 'a>(
         }
         out_shape[axis] += inp.shape[axis];
     }
+
     let out_numel = out_shape.iter().product::<usize>();
     utils::ensure_capacity(out, out_numel);
     unsafe {
         out.set_len(out_numel);
     }
-    let outer_dim: usize = non_empty_inputs[0].shape.iter().take(axis).product();
-    let inner_dim: usize = non_empty_inputs[0].shape.iter().skip(axis + 1).product();
+    if out_numel == 0 {
+        return TensorView::from_slice(out, out_shape);
+    }
+
+    let outer_dim: usize = out_shape.iter().take(axis).product();
+    let inner_dim: usize = out_shape.iter().skip(axis + 1).product();
     let out_ptr = out.as_mut_ptr();
     let mut current_out_offset = 0;
-    let mut inp_offsets = vec![0usize; non_empty_inputs.len()];
-    for _ in 0..outer_dim {
-        for (k, inp) in non_empty_inputs.iter().enumerate() {
+
+    // Direct copy without allocating offset vectors
+    for outer_i in 0..outer_dim {
+        for inp in inputs {
+            if inp.data.is_empty() {
+                continue;
+            }
             let axis_len = inp.shape[axis];
             let copy_len = axis_len * inner_dim;
+            let src_offset = outer_i * copy_len;
             let inp_ptr = inp.data.as_ptr();
+
             unsafe {
                 std::ptr::copy_nonoverlapping(
-                    inp_ptr.add(inp_offsets[k]),
+                    inp_ptr.add(src_offset),
                     out_ptr.add(current_out_offset),
                     copy_len,
                 );
             }
-            inp_offsets[k] += copy_len;
             current_out_offset += copy_len;
         }
     }

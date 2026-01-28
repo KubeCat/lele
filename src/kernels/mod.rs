@@ -1,6 +1,7 @@
 pub mod activations;
 pub mod conv1d;
 pub mod gemm;
+pub mod gemv;
 pub mod manipulation;
 pub mod math;
 pub mod neon;
