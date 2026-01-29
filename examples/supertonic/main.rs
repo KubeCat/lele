@@ -1,7 +1,10 @@
 mod audio;
 mod config;
-mod generated;
+mod durationpredictor;
 mod processor;
+mod textencoder;
+mod vectorestimator;
+mod vocoder;
 
 use anyhow::{Context, Result};
 use audio::WavWriter;
@@ -13,10 +16,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use generated::durationpredictor::DurationPredictor;
-use generated::textencoder::TextEncoder;
-use generated::vectorestimator::VectorEstimator;
-use generated::vocoder::Vocoder;
+use crate::durationpredictor::DurationPredictor;
+use crate::textencoder::TextEncoder;
+use crate::vectorestimator::VectorEstimator;
+use crate::vocoder::Vocoder;
 
 pub struct Style {
     pub ttl_data: Vec<f32>,
@@ -237,7 +240,7 @@ fn main() -> Result<()> {
     println!("Text: {}", text);
 
     let weights_dir = Path::new("examples/supertonic/models/onnx");
-    let gen_dir = Path::new("examples/supertonic/generated");
+    let gen_dir = Path::new("examples/supertonic");
     let voice_styles_dir = Path::new("examples/supertonic/models/voice_styles");
     let config_path = weights_dir.join("tts.json");
 

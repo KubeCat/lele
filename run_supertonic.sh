@@ -1,7 +1,7 @@
 #!/bin/sh
 # Step 1: Compile ONNX models for Supertonic
 MODELS_DIR="examples/supertonic/models/onnx"
-GEN_DIR="examples/supertonic/generated"
+GEN_DIR="examples/supertonic"
 
 cargo run --bin lele_gen $MODELS_DIR/duration_predictor.onnx $GEN_DIR DurationPredictor
 cargo run --bin lele_gen $MODELS_DIR/text_encoder.onnx $GEN_DIR TextEncoder

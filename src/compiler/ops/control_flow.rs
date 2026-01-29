@@ -38,8 +38,14 @@ pub(crate) fn handle_control_flow_ops(ctx: &mut OpContext, w: &mut dyn Write) ->
             }
             let then_outs: Vec<String> = then_branch.output.iter().map(|o| {
                 let name = sanitize_name(&o.name);
-                if let Some((offset, len, shape)) = ctx.known_weights.get(&name) {
-                    format!("self.weight({}, {}, &{:?}).to_owned()", offset, len, shape)
+                if let Some((offset, len, shape, dt)) = ctx.known_weights.get(&name) {
+                    let weight_fn = match dt {
+                        1 => "weight",
+                        3 => "weight_i8",
+                        10 => "weight_f16",
+                        _ => "weight",
+                    };
+                    format!("self.{}({}, {}, &{:?}).to_owned()", weight_fn, offset, len, shape)
                 } else if then_defined.contains(&name) {
                     format!("{}.to_owned()", name)
                 } else {
@@ -70,8 +76,14 @@ pub(crate) fn handle_control_flow_ops(ctx: &mut OpContext, w: &mut dyn Write) ->
             }
             let else_outs: Vec<String> = else_branch.output.iter().map(|o| {
                 let name = sanitize_name(&o.name);
-                if let Some((offset, len, shape)) = ctx.known_weights.get(&name) {
-                    format!("self.weight({}, {}, &{:?}).to_owned()", offset, len, shape)
+                if let Some((offset, len, shape, dt)) = ctx.known_weights.get(&name) {
+                    let weight_fn = match dt {
+                        1 => "weight",
+                        3 => "weight_i8",
+                        10 => "weight_f16",
+                        _ => "weight",
+                    };
+                    format!("self.{}({}, {}, &{:?}).to_owned()", weight_fn, offset, len, shape)
                 } else if else_defined.contains(&name) {
                     format!("{}.to_owned()", name)
                 } else {

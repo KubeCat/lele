@@ -7,10 +7,10 @@ pub fn compute_strides(shape: &[usize]) -> Vec<usize> {
     }
     strides
 }
-pub fn ensure_capacity(v: &mut Vec<f32>, len: usize) {
+pub fn ensure_capacity<T>(v: &mut Vec<T>, len: usize) {
     if v.capacity() < len {
         let extra = len - v.len();
-        v.reserve(extra);
+        v.try_reserve(extra).ok();
     }
     unsafe {
         v.set_len(len);

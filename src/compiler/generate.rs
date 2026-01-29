@@ -9,7 +9,7 @@ pub(crate) struct OpContext<'a> {
     pub outputs: Vec<String>,
     pub buf_expr: String,
     pub indent: usize,
-    pub known_weights: &'a HashMap<String, (usize, usize, Vec<usize>)>,
+    pub known_weights: &'a HashMap<String, (usize, usize, Vec<usize>, i32)>,
     pub int64_map: &'a HashMap<String, (Vec<i64>, Vec<usize>)>,
     #[allow(dead_code)]
     pub allocator: Option<&'a Allocator>,
@@ -67,7 +67,7 @@ pub(crate) fn generate_partitioned_graph<W: Write>(
     chunk_writer: &mut Vec<String>, // Function definitions
     body_writer: &mut W,            // Forward body calls
     indent: usize,
-    known_weights: &HashMap<String, (usize, usize, Vec<usize>)>,
+    known_weights: &HashMap<String, (usize, usize, Vec<usize>, i32)>,
     int64_map: &HashMap<String, (Vec<i64>, Vec<usize>)>,
     allocator: Option<&Allocator>,
     analysis: Option<&AnalysisData>,
@@ -250,7 +250,7 @@ pub(crate) fn generate_nodes(
     nodes: &[&NodeProto],
     w: &mut dyn Write,
     indent: usize,
-    known_weights: &HashMap<String, (usize, usize, Vec<usize>)>,
+    known_weights: &HashMap<String, (usize, usize, Vec<usize>, i32)>,
     int64_map: &HashMap<String, (Vec<i64>, Vec<usize>)>,
     allocator: Option<&Allocator>,
     analysis: Option<&AnalysisData>,
@@ -291,8 +291,16 @@ pub(crate) fn generate_nodes(
             .iter()
             .map(|s| {
                 let name = sanitize_name(s);
-                if let Some((offset, len, shape)) = known_weights.get(&name) {
-                    format!("self.weight({}, {}, &{:?})", offset, len, shape)
+                if let Some((offset, len, shape, data_type)) = known_weights.get(&name) {
+                    match data_type {
+                        1 => format!("self.weight_f32({}, {}, &{:?})", offset, len, shape),
+                        2 => format!("self.weight_u8({}, {}, &{:?})", offset, len, shape),
+                        3 => format!("self.weight_i8({}, {}, &{:?})", offset, len, shape),
+                        6 => format!("self.weight_i32({}, {}, &{:?})", offset, len, shape),
+                        7 => format!("self.weight_i64({}, {}, &{:?})", offset, len, shape),
+                        10 => format!("self.weight_f16({}, {}, &{:?})", offset, len, shape),
+                        _ => format!("self.weight_f32({}, {}, &{:?})", offset, len, shape),
+                    }
                 } else {
                     name
                 }

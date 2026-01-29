@@ -1,2 +1,5 @@
 models/
-generated/
+durationpredictor.rs
+textencoder.rs
+vectorestimator.rs
+vocoder.rs

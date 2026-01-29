@@ -3,6 +3,7 @@ use lele::kernels::*;
 use lele::tensor::TensorView;
 
 fn assert_close(a: &[f32], b: &[f32], tol: f32, name: &str) {
+    // Temporarily relax length check if convenient, but rigorous test should match
     assert_eq!(a.len(), b.len(), "{}: length mismatch", name);
     let max_diff = a
         .iter()
@@ -45,6 +46,54 @@ fn test_softmax_accuracy() {
         "Softmax sum should be 1.0, got {}",
         sum
     );
+}
+
+#[test]
+fn test_mat_mul_integer() {
+    // 2x3 * 3x2
+    // A (2x3)
+    // 10 20 30
+    // 40 50 60
+    // zp_a = 5
+    // Real A:
+    // 5 15 25
+    // 35 45 55
+
+    // B (3x2)
+    // 1 2
+    // 3 4
+    // 5 6
+    // zp_b = 1
+    // Real B:
+    // 0 1
+    // 2 3
+    // 4 5
+
+    // A * B
+    // (5*0 + 15*2 + 25*4)  (5*1 + 15*3 + 25*5)
+    // (0 + 30 + 100)       (5 + 45 + 125)
+    // 130                  175
+
+    // (35*0 + 45*2 + 55*4) (35*1 + 45*3 + 55*5)
+    // (0 + 90 + 220)       (35 + 135 + 275)
+    // 310                  445
+
+    let a_data: Vec<f32> = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0];
+    let b_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+    let a = TensorView::from_owned(a_data, vec![2, 3]);
+    let b = TensorView::from_owned(b_data, vec![3, 2]);
+
+    let zp_a_val: Vec<f32> = vec![5.0];
+    let zp_b_val: Vec<f32> = vec![1.0];
+    let zp_a = TensorView::from_owned(zp_a_val, vec![1]);
+    let zp_b = TensorView::from_owned(zp_b_val, vec![1]);
+
+    let mut out_buf = Vec::new();
+    let result = mat_mul_integer(&a, &b, Some(&zp_a), Some(&zp_b), &mut out_buf);
+
+    let expected = vec![130.0, 175.0, 310.0, 445.0];
+    assert_close(&result.data, &expected, 1e-5, "test_mat_mul_integer");
 }
 
 #[test]
@@ -167,7 +216,7 @@ fn test_dynamic_quantize_accuracy() {
     let dequant: Vec<f32> = quantized
         .data
         .iter()
-        .map(|&q| (q - zp_val) * scale_val)
+        .map(|&q| (q as f32 - zp_val) * scale_val)
         .collect();
 
     let max_error: f32 = x
@@ -191,13 +240,16 @@ fn test_dynamic_quantize_accuracy() {
 #[test]
 fn test_mat_mul_integer_accuracy() {
     // Simple case: all zero points are 0
-    let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
-    let b = vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0]; // 3x2
+    let a: Vec<u8> = vec![1, 2, 3, 4, 5, 6]; // 2x3
+    let b: Vec<u8> = vec![7, 8, 9, 10, 11, 12]; // 3x2
 
-    let a_t = TensorView::from_owned(a, vec![2, 3]);
-    let b_t = TensorView::from_owned(b, vec![3, 2]);
-    let zp_a = TensorView::from_owned(vec![0.0], vec![1]);
-    let zp_b = TensorView::from_owned(vec![0.0], vec![1]);
+    // Convert u8 to f32 for new API
+    let a_f32: Vec<f32> = a.iter().map(|&x| x as f32).collect();
+    let b_f32: Vec<f32> = b.iter().map(|&x| x as f32).collect();
+    let a_t = TensorView::from_owned(a_f32, vec![2, 3]);
+    let b_t = TensorView::from_owned(b_f32, vec![3, 2]);
+    let zp_a = TensorView::from_owned(vec![0.0f32], vec![1]);
+    let zp_b = TensorView::from_owned(vec![0.0f32], vec![1]);
 
     let mut out_buf = Vec::new();
     let result = mat_mul_integer(&a_t, &b_t, Some(&zp_a), Some(&zp_b), &mut out_buf);

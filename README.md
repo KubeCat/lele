@@ -15,7 +15,7 @@ In-depth comparison between **lele** and **ONNX Runtime (CPU)** on macOS (Apple 
 | Model | ORT RTF (CPU) | lele RTF | Speedup |
 | :--- | :--- | :--- | :--- |
 | **Silero VAD** | 0.0031 | 0.0031 | - |
-| **SenseVoice** | **0.0318** | 0.1348 | 0.24x |
+| **SenseVoice** | **0.032** | 0.11 | 0.29x |
 | **Supertonic** | **0.1225** | 0.2335 | 0.52x |
 
 *Note: RTF (Real-Time Factor) is defined as (Inference Time / Audio Duration). Lower is better. `lele` optimizations currently focus on transformer/convolution patterns found in large-scale ASR models.*

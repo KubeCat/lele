@@ -1,88 +1,148 @@
-use crate::kernels::matmul;
 use crate::tensor::TensorView;
-use std::borrow::Cow;
 
+// MatMulInteger operation: accepts f32 tensors and converts internally to u8
 pub fn mat_mul_integer<'a, 'b, 'c>(
-    a: &TensorView<'b>,
-    b: &TensorView<'c>,
-    a_zero_point: Option<&TensorView<'b>>,
-    b_zero_point: Option<&TensorView<'c>>,
+    a: &TensorView<'b, f32>,
+    b: &TensorView<'c, f32>,
+    a_zero_point: Option<&TensorView<'b, f32>>,
+    b_zero_point: Option<&TensorView<'c, f32>>,
     out: &'a mut Vec<f32>,
-) -> TensorView<'a> {
-    let a_adjusted_data: Option<Vec<f32>> = if let Some(zp) = a_zero_point {
-        let zp_val = zp.data[0];
-        if zp_val != 0.0 {
-            Some(a.data.iter().map(|&x| x - zp_val).collect())
+) -> TensorView<'a, f32> {
+    // Convert f32 tensors to u8 for actual computation
+    let a_u8: Vec<u8> = a.data.iter().map(|&x| x as u8).collect();
+    let b_u8: Vec<u8> = b.data.iter().map(|&x| x as u8).collect();
+
+    let a_u8_view = TensorView::from_slice(&a_u8, a.shape.to_vec());
+    let b_u8_view = TensorView::from_slice(&b_u8, b.shape.to_vec());
+
+    let a_zp_u8 = a_zero_point.map(|z| {
+        let data: Vec<u8> = z.data.iter().map(|&x| x as u8).collect();
+        TensorView::from_owned(data, z.shape.to_vec())
+    });
+    let b_zp_u8 = b_zero_point.map(|z| {
+        let data: Vec<u8> = z.data.iter().map(|&x| x as u8).collect();
+        TensorView::from_owned(data, z.shape.to_vec())
+    });
+
+    mat_mul_integer_u8(
+        &a_u8_view,
+        &b_u8_view,
+        a_zp_u8.as_ref(),
+        b_zp_u8.as_ref(),
+        out,
+    )
+}
+
+// True quantization version (u8 x u8 -> f32 output)
+fn mat_mul_integer_u8<'a, 'b, 'c>(
+    a: &TensorView<'b, u8>,
+    b: &TensorView<'c, u8>,
+    a_zero_point: Option<&TensorView<'b, u8>>,
+    b_zero_point: Option<&TensorView<'c, u8>>,
+    out: &'a mut Vec<f32>,
+) -> TensorView<'a, f32> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::kernels::neon::quantization::mat_mul_integer_u8(
+            a,
+            b,
+            a_zero_point,
+            b_zero_point,
+            out,
+        )
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        use crate::kernels::utils;
+        let zp_a = a_zero_point.map(|z| z.data[0] as f32).unwrap_or(0.0);
+        let zp_b = b_zero_point.map(|z| z.data[0] as f32).unwrap_or(0.0);
+
+        let a_dims = a.shape.len();
+        let b_dims = b.shape.len();
+        let m = a.shape[a_dims - 2];
+        let k = a.shape[a_dims - 1];
+        let n = b.shape[b_dims - 1];
+
+        // Batch handling
+        let batch_a: usize = a.shape[..a_dims - 2].iter().product();
+        let batch_b: usize = b.shape[..b_dims - 2].iter().product();
+        let final_batch = batch_a.max(batch_b);
+
+        let output_len = final_batch * m * n;
+        utils::ensure_capacity(out, output_len);
+
+        // Ensure exact size for safety
+        out.resize(output_len, 0.0);
+
+        let stride_a = m * k;
+        let stride_b = k * n;
+        let stride_out = m * n;
+
+        // Naive loop with f32 accumulation (slow) - Fallback
+        for b_i in 0..final_batch {
+            let a_offset = if batch_a == 1 { 0 } else { b_i * stride_a };
+            let b_offset = if batch_b == 1 { 0 } else { b_i * stride_b };
+            let out_offset = b_i * stride_out;
+
+            let a_data = &a.data[a_offset..a_offset + stride_a];
+            let b_data = &b.data[b_offset..b_offset + stride_b];
+            let out_data = &mut out[out_offset..out_offset + stride_out];
+
+            for i in 0..m {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for l in 0..k {
+                        let val_a = a_data[i * k + l] as f32 - zp_a;
+                        let val_b = b_data[l * n + j] as f32 - zp_b;
+                        sum += val_a * val_b;
+                    }
+                    out_data[i * n + j] = sum;
+                }
+            }
+        }
+
+        let mut output_shape = if batch_a >= batch_b {
+            a.shape[..a_dims - 2].to_vec()
         } else {
-            None
-        }
-    } else {
-        None
-    };
-    let b_adjusted_data: Option<Vec<f32>> = if let Some(zp) = b_zero_point {
-        let zp_val = zp.data[0];
-        if zp_val != 0.0 {
-            Some(b.data.iter().map(|&x| x - zp_val).collect())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let a_view = if let Some(d) = &a_adjusted_data {
-        TensorView {
-            data: Cow::Borrowed(d),
-            shape: a.shape.clone(),
-        }
-    } else {
-        TensorView {
-            data: Cow::Borrowed(&a.data),
-            shape: a.shape.clone(),
-        }
-    };
-    let b_view = if let Some(d) = &b_adjusted_data {
-        TensorView {
-            data: Cow::Borrowed(d),
-            shape: b.shape.clone(),
-        }
-    } else {
-        TensorView {
-            data: Cow::Borrowed(&b.data),
-            shape: b.shape.clone(),
-        }
-    };
-    matmul(&a_view, &b_view, out)
+            b.shape[..b_dims - 2].to_vec()
+        };
+        output_shape.push(m);
+        output_shape.push(n);
+
+        TensorView::from_slice(out, output_shape)
+    }
 }
 
 pub fn dynamic_quantize_linear<'a, 'b>(
-    x: &TensorView<'b>,
-    out_y: &'a mut Vec<f32>,
+    x: &TensorView<'b, f32>,
+    out_y_storage: &'a mut Vec<f32>,
     out_scale: &'a mut Vec<f32>,
     out_zp: &'a mut Vec<f32>,
-) -> (TensorView<'a>, TensorView<'a>, TensorView<'a>) {
+) -> (
+    TensorView<'a, f32>,
+    TensorView<'a, f32>,
+    TensorView<'a, f32>,
+) {
     #[cfg(target_arch = "aarch64")]
     {
-        crate::kernels::neon::quantization::dynamic_quantize_linear(x, out_y, out_scale, out_zp)
+        crate::kernels::neon::quantization::dynamic_quantize_linear(
+            x,
+            out_y_storage,
+            out_scale,
+            out_zp,
+        )
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
         let len = x.data.len();
-        if len == 0 {
-            return (
-                TensorView {
-                    data: Cow::Borrowed(out_y),
-                    shape: Cow::Owned(x.shape.to_vec()),
-                },
-                TensorView {
-                    data: Cow::Borrowed(out_scale),
-                    shape: Cow::Owned(vec![1]),
-                },
-                TensorView {
-                    data: Cow::Borrowed(out_zp),
-                    shape: Cow::Owned(vec![1]),
-                },
-            );
+        let cap_bytes = out_y_storage.capacity() * 4;
+        if cap_bytes < len {
+            out_y_storage.reserve((len + 3) / 4);
         }
+
+        let ptr = out_y_storage.as_mut_ptr() as *mut u8;
+        let out_u8 = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
+
         let mut min_val = f32::MAX;
         let mut max_val = f32::MIN;
         for &v in x.data.iter() {
@@ -93,44 +153,32 @@ pub fn dynamic_quantize_linear<'a, 'b>(
                 max_val = v;
             }
         }
+
         let adjusted_max = max_val.max(0.0);
         let adjusted_min = min_val.min(0.0);
         let range = (adjusted_max - adjusted_min).max(1e-5);
         let scale = range / 255.0;
         let zp = (-adjusted_min / scale).round().clamp(0.0, 255.0);
-        utils::ensure_capacity(out_scale, 1);
-        unsafe {
-            out_scale.set_len(1);
-        }
-        out_scale[0] = scale;
-        utils::ensure_capacity(out_zp, 1);
-        unsafe {
-            out_zp.set_len(1);
-        }
-        out_zp[0] = zp;
-        utils::ensure_capacity(out_y, len);
-        unsafe {
-            out_y.set_len(len);
-        }
         let inv_scale = 1.0 / scale;
-        let x_data = &x.data;
-        let y_data = out_y.as_mut_slice();
+
+        out_scale.clear();
+        out_scale.push(scale);
+
+        out_zp.clear();
+        out_zp.push(zp);
+
         for i in 0..len {
-            y_data[i] = (x_data[i] * inv_scale + zp).round().clamp(0.0, 255.0);
+            out_u8[i] = (x.data[i] * inv_scale + zp).round().clamp(0.0, 255.0) as u8;
         }
+
+        // Convert u8 output to f32
+        out_y_storage.clear();
+        out_y_storage.extend(out_u8.iter().map(|&v| v as f32));
+
         (
-            TensorView {
-                data: Cow::Borrowed(out_y),
-                shape: Cow::Owned(x.shape.to_vec()),
-            },
-            TensorView {
-                data: Cow::Borrowed(out_scale),
-                shape: Cow::Owned(vec![1]),
-            },
-            TensorView {
-                data: Cow::Borrowed(out_zp),
-                shape: Cow::Owned(vec![1]),
-            },
+            TensorView::from_slice(out_y_storage, x.shape.to_vec()),
+            TensorView::from_slice(out_scale, vec![1]),
+            TensorView::from_slice(out_zp, vec![1]),
         )
     }
 }

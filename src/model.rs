@@ -80,6 +80,61 @@ pub fn tensor_to_array(tensor: &TensorProto) -> Result<(Vec<f32>, Vec<usize>), M
     };
     Ok((data, dims))
 }
+
+pub fn tensor_to_vec_u8(tensor: &TensorProto) -> Result<(Vec<u8>, Vec<usize>, i32), ModelError> {
+    let dims: Vec<usize> = tensor.dims.iter().map(|&d| d as usize).collect();
+    let data_type = tensor.data_type;
+
+    if !tensor.raw_data.is_empty() {
+        return Ok((tensor.raw_data.clone(), dims, data_type));
+    }
+
+    // Fallback if raw_data is empty (usually for small constants in some ONNX exporters)
+    match data_type {
+        1 => {
+            // FLOAT
+            let mut bytes = Vec::with_capacity(tensor.float_data.len() * 4);
+            for &f in &tensor.float_data {
+                bytes.extend_from_slice(&f.to_le_bytes());
+            }
+            Ok((bytes, dims, data_type))
+        }
+        2 => {
+            // UINT8
+            Ok((
+                tensor.int32_data.iter().map(|&x| x as u8).collect(),
+                dims,
+                data_type,
+            ))
+        }
+        3 => {
+            // INT8
+            Ok((
+                tensor.int32_data.iter().map(|&x| x as u8).collect(),
+                dims,
+                data_type,
+            ))
+        }
+        6 => {
+            // INT32
+            let mut bytes = Vec::with_capacity(tensor.int32_data.len() * 4);
+            for &i in &tensor.int32_data {
+                bytes.extend_from_slice(&i.to_le_bytes());
+            }
+            Ok((bytes, dims, data_type))
+        }
+        7 => {
+            // INT64
+            let mut bytes = Vec::with_capacity(tensor.int64_data.len() * 8);
+            for &i in &tensor.int64_data {
+                bytes.extend_from_slice(&i.to_le_bytes());
+            }
+            Ok((bytes, dims, data_type))
+        }
+        _ => Err(ModelError::InvalidTensorData),
+    }
+}
+
 pub fn find_constant_node_tensor<'a>(
     graph: &'a GraphProto,
     name_suffix: &str,

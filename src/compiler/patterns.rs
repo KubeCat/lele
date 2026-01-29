@@ -75,8 +75,15 @@ pub fn get_default_patterns() -> Vec<Pattern> {
                 let input = sanitize_name(&nodes[0].input[0]);
                 let get_weight = |name: &str| -> String {
                     let s = sanitize_name(name);
-                    if let Some((o, l, sh)) = weights.get(&s) {
-                        format!("self.weight({}, {}, &{:?})", o, l, sh)
+                    if let Some((o, l, sh, dt)) = weights.get(&s) {
+                        match dt {
+                            1 => format!("self.weight_f32({}, {}, &{:?})", o, l, sh),
+                            3 => format!("self.weight_i8({}, {}, &{:?})", o, l, sh),
+                            6 => format!("self.weight_i32({}, {}, &{:?})", o, l, sh),
+                            7 => format!("self.weight_i64({}, {}, &{:?})", o, l, sh),
+                            10 => format!("self.weight_f16({}, {}, &{:?})", o, l, sh),
+                            _ => format!("self.weight_f32({}, {}, &{:?})", o, l, sh),
+                        }
                     } else {
                         s
                     }
@@ -174,8 +181,16 @@ pub fn get_default_patterns() -> Vec<Pattern> {
                 let input = sanitize_name(&nodes[0].input[0]);
                 let get_weight = |name: &str| -> String {
                     let s = sanitize_name(name);
-                    if let Some((o, l, sh)) = weights.get(&s) {
-                        format!("self.weight({}, {}, &{:?})", o, l, sh)
+                    if let Some((o, l, sh, dt)) = weights.get(&s) {
+                        match dt {
+                            1 => format!("self.weight_f32({}, {}, &{:?})", o, l, sh),
+                            2 => format!("self.weight_u8({}, {}, &{:?})", o, l, sh),
+                            3 => format!("self.weight_i8({}, {}, &{:?})", o, l, sh),
+                            6 => format!("self.weight_i32({}, {}, &{:?})", o, l, sh),
+                            7 => format!("self.weight_i64({}, {}, &{:?})", o, l, sh),
+                            10 => format!("self.weight_f16({}, {}, &{:?})", o, l, sh),
+                            _ => format!("self.weight_f32({}, {}, &{:?})", o, l, sh),
+                        }
                     } else {
                         s
                     }
@@ -257,13 +272,31 @@ pub fn get_default_patterns() -> Vec<Pattern> {
                     })
                     .unwrap_or(0.0);
                 let shape_input = sanitize_name(&cos_node.input[0]);
-                let shape_expr = if let Some((o, l, s)) = weights.get(&shape_input) {
-                    format!("&self.weight({}, {}, &{:?})", o, l, s)
+                let shape_expr = if let Some((o, l, s, dt)) = weights.get(&shape_input) {
+                    let loader = match *dt {
+                        1 => "weight_f32",
+                        2 => "weight_u8",
+                        3 => "weight_i8",
+                        6 => "weight_i32",
+                        7 => "weight_i64",
+                        10 => "weight_f16",
+                        _ => "weight_f32",
+                    };
+                    format!("&self.{}({}, {}, &{:?})", loader, o, l, s)
                 } else {
                     format!("&{}", shape_input)
                 };
-                let weight_expr = if let Some((o, l, s)) = weights.get(&weight_name) {
-                    format!("self.weight({}, {}, &{:?})", o, l, s)
+                let weight_expr = if let Some((o, l, s, dt)) = weights.get(&weight_name) {
+                    let loader = match *dt {
+                        1 => "weight_f32",
+                        2 => "weight_u8",
+                        3 => "weight_i8",
+                        6 => "weight_i32",
+                        7 => "weight_i64",
+                        10 => "weight_f16",
+                        _ => "weight_f32",
+                    };
+                    format!("self.{}({}, {}, &{:?})", loader, o, l, s)
                 } else {
                     weight_name
                 };
@@ -310,21 +343,48 @@ pub fn get_default_patterns() -> Vec<Pattern> {
                 let weight = &conv.input[1];
                 let input_s = sanitize_name(input);
                 let weight_s = sanitize_name(weight);
-                let input_expr = if let Some((o, l, s)) = weights.get(&input_s) {
-                    format!("self.weight({}, {}, &{:?})", o, l, s)
+                let input_expr = if let Some((o, l, s, dt)) = weights.get(&input_s) {
+                    let loader = match *dt {
+                        1 => "weight_f32",
+                        2 => "weight_u8",
+                        3 => "weight_i8",
+                        6 => "weight_i32",
+                        7 => "weight_i64",
+                        10 => "weight_f16",
+                        _ => "weight_f32",
+                    };
+                    format!("self.{}({}, {}, &{:?})", loader, o, l, s)
                 } else {
                     input_s
                 };
-                let weight_expr = if let Some((o, l, s)) = weights.get(&weight_s) {
-                    format!("self.weight({}, {}, &{:?})", o, l, s)
+                let weight_expr = if let Some((o, l, s, dt)) = weights.get(&weight_s) {
+                    let loader = match *dt {
+                        1 => "weight_f32",
+                        2 => "weight_u8",
+                        3 => "weight_i8",
+                        6 => "weight_i32",
+                        7 => "weight_i64",
+                        10 => "weight_f16",
+                        _ => "weight_f32",
+                    };
+                    format!("self.{}({}, {}, &{:?})", loader, o, l, s)
                 } else {
                     weight_s
                 };
                 let bias = if conv.input.len() > 2 {
                     let b = &conv.input[2];
                     let b_s = sanitize_name(b);
-                    if let Some((o, l, s)) = weights.get(&b_s) {
-                        format!("Some(&self.weight({}, {}, &{:?}))", o, l, s)
+                    if let Some((o, l, s, dt)) = weights.get(&b_s) {
+                        let loader = match *dt {
+                            1 => "weight_f32",
+                            2 => "weight_u8",
+                            3 => "weight_i8",
+                            6 => "weight_i32",
+                            7 => "weight_i64",
+                            10 => "weight_f16",
+                            _ => "weight_f32",
+                        };
+                        format!("Some(&self.{}({}, {}, &{:?}))", loader, o, l, s)
                     } else {
                         format!("Some(&{})", b_s)
                     }
@@ -407,8 +467,13 @@ pub fn get_default_patterns() -> Vec<Pattern> {
                 let input = sanitize_name(&mm.input[0]);
                 let getter = |name: &str| -> String {
                     let s = sanitize_name(name);
-                    if let Some((o, l, sh)) = weights.get(&s) {
-                        format!("self.weight({}, {}, &{:?})", o, l, sh)
+                    if let Some((o, l, sh, dt)) = weights.get(&s) {
+                        match dt {
+                            1 => format!("self.weight_f32({}, {}, &{:?})", o, l, sh),
+                            3 => format!("self.weight_i8({}, {}, &{:?})", o, l, sh),
+                            10 => format!("self.weight_f16({}, {}, &{:?})", o, l, sh),
+                            _ => format!("self.weight_f32({}, {}, &{:?})", o, l, sh),
+                        }
                     } else {
                         s
                     }

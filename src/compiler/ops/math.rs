@@ -15,6 +15,7 @@ pub(crate) fn handle_math_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::io
         "Div" => writeln!(w, "{}let {} = lele::kernels::div(&{}, &{}, {});", tab, outputs[0], inputs[0], inputs[1], buf_expr)?,
         "MatMul" => writeln!(w, "{}let {} = lele::kernels::matmul(&{}, &{}, {});", tab, outputs[0], inputs[0], inputs[1], buf_expr)?,
         "MatMulInteger" => {
+            // MatMulInteger expects u8 inputs.
             let a_zp = if inputs.len() > 2 { format!("Some(&{})", inputs[2]) } else { "None".to_string() };
             let b_zp = if inputs.len() > 3 { format!("Some(&{})", inputs[3]) } else { "None".to_string() };
             writeln!(w, "{}let {} = lele::kernels::mat_mul_integer(&{}, &{}, {}, {}, {});", tab, outputs[0], inputs[0], inputs[1], a_zp, b_zp, buf_expr)?;

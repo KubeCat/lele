@@ -128,8 +128,17 @@ pub(crate) fn handle_tensor_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::
             writeln!(w, "{}let ({}, {}, {}) = lele::kernels::dynamic_quantize_linear(&{}, {}, &mut buf_{}, &mut buf_{});", tab, outputs[0], outputs[1], outputs[2], inputs[0], buf_expr, outputs[1], outputs[2])?;
         }
         "Identity" | "Constant" => {
-            if let Some((offset, len, shape)) = ctx.known_weights.get(&outputs[0]) {
-                writeln!(w, "{}let {} = self.weight({}, {}, &{:?});", tab, outputs[0], offset, len, shape)?;
+            if let Some((offset, len, shape, dt)) = ctx.known_weights.get(&outputs[0]) {
+                let weight_fn = match dt {
+                    1 => "weight_f32",
+                    2 => "weight_u8",
+                    3 => "weight_i8",
+                    6 => "weight_i32",
+                    7 => "weight_i64",
+                    10 => "weight_f16",
+                    _ => "weight_f32",
+                };
+                writeln!(w, "{}let {} = self.{}({}, {}, &{:?});", tab, outputs[0], weight_fn, offset, len, shape)?;
             } else if let Some((ints, shape)) = ctx.int64_map.get(&ctx.node.output[0]) {
                 let floats: Vec<String> = ints.iter().map(|&x| format!("{:.1}", x as f32)).collect();
                 writeln!(w, "{}let {} = lele::tensor::TensorView::from_owned(vec![{}], vec!{:?});", tab, outputs[0], floats.join(", "), shape)?;
