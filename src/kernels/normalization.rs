@@ -1,6 +1,58 @@
 use crate::tensor::TensorView;
 use crate::kernels::utils;
 use std::borrow::Cow;
+
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn fast_exp_f32x4(x: float32x4_t) -> float32x4_t {
+    // Fast exp approximation using exp(x) ≈ 2^(x/ln2)
+    // Accurate to ~0.5% for typical softmax range [-10, 0]
+    
+    const LN2_RECIP: f32 = 1.442695041; // 1/ln(2)
+    const C1: f32 = 1.0;
+    const C2: f32 = 0.693147181;
+    const C3: f32 = 0.240226507;
+    const C4: f32 = 0.055504109;
+    const C5: f32 = 0.009618129;
+    
+    let ln2_recip_vec = vdupq_n_f32(LN2_RECIP);
+    let c1_vec = vdupq_n_f32(C1);
+    let c2_vec = vdupq_n_f32(C2);
+    let c3_vec = vdupq_n_f32(C3);
+    let c4_vec = vdupq_n_f32(C4);
+    let c5_vec = vdupq_n_f32(C5);
+    
+    // Convert to base-2: x' = x / ln(2)
+    let x_scaled = vmulq_f32(x, ln2_recip_vec);
+    
+    // Split into integer and fractional parts
+    let x_floor = vcvtq_s32_f32(x_scaled);
+    let x_int = vcvtq_f32_s32(x_floor);
+    let x_frac = vsubq_f32(x_scaled, x_int);
+    
+    // Polynomial approximation: 2^f ≈ 1 + f*C2 + f²*C3 + f³*C4 + f⁴*C5
+    let f2 = vmulq_f32(x_frac, x_frac);
+    let f3 = vmulq_f32(f2, x_frac);
+    let f4 = vmulq_f32(f3, x_frac);
+    
+    let poly = vaddq_f32(c1_vec, 
+        vaddq_f32(vmulq_f32(x_frac, c2_vec),
+        vaddq_f32(vmulq_f32(f2, c3_vec),
+        vaddq_f32(vmulq_f32(f3, c4_vec),
+                  vmulq_f32(f4, c5_vec)))));
+    
+    // Scale by 2^(integer part) using bit manipulation
+    let bias = vdupq_n_s32(127);
+    let exponent = vaddq_s32(x_floor, bias);
+    let result_bits = vshlq_n_s32(exponent, 23);
+    let scale = vreinterpretq_f32_s32(result_bits);
+    
+    vmulq_f32(poly, scale)
+}
+
 pub fn softmax<'b, 'a>(
     input: &TensorView<'b>,
     axis: i32,
@@ -17,21 +69,99 @@ pub fn softmax<'b, 'a>(
     let outer_size: usize = input.shape[..axis].iter().product();
     let data = &input.data;
     if inner_size == 1 {
-        for i in 0..outer_size {
-            let start = i * axis_size;
-            let end = start + axis_size;
-            let src = &data[start..end];
-            let dst = &mut out_slice[start..end];
-            let max_val = src.iter().fold(f32::MIN, |a, &b| a.max(b));
-            let mut sum = 0.0;
-            for (j, &val) in src.iter().enumerate() {
-                let e = (val - max_val).exp();
-                dst[j] = e;
-                sum += e;
+        #[cfg(target_arch = "aarch64")]
+        {
+            use std::arch::aarch64::*;
+            for i in 0..outer_size {
+                let start = i * axis_size;
+                let end = start + axis_size;
+                let src = &data[start..end];
+                let dst = &mut out_slice[start..end];
+                
+                // SIMD max finding
+                unsafe {
+                    let mut max_vec = vdupq_n_f32(f32::MIN);
+                    let mut j = 0;
+                    let simd_end = (axis_size / 4) * 4;
+                    
+                    while j < simd_end {
+                        let v = vld1q_f32(src.as_ptr().add(j));
+                        max_vec = vmaxq_f32(max_vec, v);
+                        j += 4;
+                    }
+                    
+                    // Horizontal max
+                    let max_val = vgetq_lane_f32(max_vec, 0)
+                        .max(vgetq_lane_f32(max_vec, 1))
+                        .max(vgetq_lane_f32(max_vec, 2))
+                        .max(vgetq_lane_f32(max_vec, 3))
+                        .max(src[simd_end..].iter().fold(f32::MIN, |a, &b| a.max(b)));
+                    
+                    // SIMD exp and sum
+                    let max_broadcast = vdupq_n_f32(max_val);
+                    let mut sum_vec = vdupq_n_f32(0.0);
+                    
+                    j = 0;
+                    while j < simd_end {
+                        let v = vld1q_f32(src.as_ptr().add(j));
+                        let shifted = vsubq_f32(v, max_broadcast);
+                        
+                        // Fast exp approximation (accurate enough for softmax)
+                        let exp_val = fast_exp_f32x4(shifted);
+                        vst1q_f32(dst.as_mut_ptr().add(j), exp_val);
+                        sum_vec = vaddq_f32(sum_vec, exp_val);
+                        j += 4;
+                    }
+                    
+                    // Horizontal sum + remaining elements
+                    let mut sum = vgetq_lane_f32(sum_vec, 0)
+                        + vgetq_lane_f32(sum_vec, 1)
+                        + vgetq_lane_f32(sum_vec, 2)
+                        + vgetq_lane_f32(sum_vec, 3);
+                    
+                    for k in simd_end..axis_size {
+                        let e = (src[k] - max_val).exp();
+                        dst[k] = e;
+                        sum += e;
+                    }
+                    
+                    // SIMD normalization
+                    let inv_sum = 1.0 / sum;
+                    let inv_sum_vec = vdupq_n_f32(inv_sum);
+                    
+                    j = 0;
+                    while j < simd_end {
+                        let v = vld1q_f32(dst.as_ptr().add(j));
+                        let normalized = vmulq_f32(v, inv_sum_vec);
+                        vst1q_f32(dst.as_mut_ptr().add(j), normalized);
+                        j += 4;
+                    }
+                    
+                    for k in simd_end..axis_size {
+                        dst[k] *= inv_sum;
+                    }
+                }
             }
-            let inv_sum = 1.0 / sum;
-            for x in dst.iter_mut() {
-                *x *= inv_sum;
+        }
+        
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            for i in 0..outer_size {
+                let start = i * axis_size;
+                let end = start + axis_size;
+                let src = &data[start..end];
+                let dst = &mut out_slice[start..end];
+                let max_val = src.iter().fold(f32::MIN, |a, &b| a.max(b));
+                let mut sum = 0.0;
+                for (j, &val) in src.iter().enumerate() {
+                    let e = (val - max_val).exp();
+                    dst[j] = e;
+                    sum += e;
+                }
+                let inv_sum = 1.0 / sum;
+                for x in dst.iter_mut() {
+                    *x *= inv_sum;
+                }
             }
         }
     } else {
@@ -70,63 +200,137 @@ pub fn layer_norm<'b, 'a>(
             let chunk = &src[offset .. offset + norm_size];
             let out_chunk = &mut out_slice[offset .. offset + norm_size];
             
-            // Mean
-            let mut sum_v = unsafe { vdupq_n_f32(0.0) };
-            let mut j = 0;
-            while j + 4 <= norm_size {
-                unsafe {
-                    let v = vld1q_f32(chunk.as_ptr().add(j));
-                    sum_v = vaddq_f32(sum_v, v);
+            unsafe {
+                // Single-pass mean + variance with 4-way loop unrolling
+                let mut sum_v0 = vdupq_n_f32(0.0);
+                let mut sum_v1 = vdupq_n_f32(0.0);
+                let mut sum_v2 = vdupq_n_f32(0.0);
+                let mut sum_v3 = vdupq_n_f32(0.0);
+                let mut sum_sq_v0 = vdupq_n_f32(0.0);
+                let mut sum_sq_v1 = vdupq_n_f32(0.0);
+                let mut sum_sq_v2 = vdupq_n_f32(0.0);
+                let mut sum_sq_v3 = vdupq_n_f32(0.0);
+                
+                let mut j = 0;
+                let unroll_end = (norm_size / 16) * 16;
+                
+                // 4-way unrolled loop: process 16 elements per iteration
+                while j < unroll_end {
+                    let v0 = vld1q_f32(chunk.as_ptr().add(j));
+                    let v1 = vld1q_f32(chunk.as_ptr().add(j + 4));
+                    let v2 = vld1q_f32(chunk.as_ptr().add(j + 8));
+                    let v3 = vld1q_f32(chunk.as_ptr().add(j + 12));
+                    
+                    sum_v0 = vaddq_f32(sum_v0, v0);
+                    sum_v1 = vaddq_f32(sum_v1, v1);
+                    sum_v2 = vaddq_f32(sum_v2, v2);
+                    sum_v3 = vaddq_f32(sum_v3, v3);
+                    
+                    sum_sq_v0 = vfmaq_f32(sum_sq_v0, v0, v0);
+                    sum_sq_v1 = vfmaq_f32(sum_sq_v1, v1, v1);
+                    sum_sq_v2 = vfmaq_f32(sum_sq_v2, v2, v2);
+                    sum_sq_v3 = vfmaq_f32(sum_sq_v3, v3, v3);
+                    
+                    j += 16;
                 }
-                j += 4;
-            }
-            let mut sum = unsafe { vaddvq_f32(sum_v) };
-            while j < norm_size {
-                sum += chunk[j];
-                j += 1;
-            }
-            let mean = sum / norm_size as f32;
-            let mean_v = unsafe { vdupq_n_f32(mean) };
-
-            // Variance
-            let mut var_sum_v = unsafe { vdupq_n_f32(0.0) };
-            j = 0;
-            while j + 4 <= norm_size {
-                unsafe {
+                
+                // Combine accumulators
+                sum_v0 = vaddq_f32(vaddq_f32(sum_v0, sum_v1), vaddq_f32(sum_v2, sum_v3));
+                sum_sq_v0 = vaddq_f32(vaddq_f32(sum_sq_v0, sum_sq_v1), vaddq_f32(sum_sq_v2, sum_sq_v3));
+                
+                // Cleanup: remaining 0-15 elements
+                let simd_end = (norm_size / 4) * 4;
+                while j < simd_end {
                     let v = vld1q_f32(chunk.as_ptr().add(j));
-                    let diff = vsubq_f32(v, mean_v);
-                    var_sum_v = vfmaq_f32(var_sum_v, diff, diff);
+                    sum_v0 = vaddq_f32(sum_v0, v);
+                    sum_sq_v0 = vfmaq_f32(sum_sq_v0, v, v);
+                    j += 4;
                 }
-                j += 4;
-            }
-            let mut var_sum = unsafe { vaddvq_f32(var_sum_v) };
-            while j < norm_size {
-                let diff = chunk[j] - mean;
-                var_sum += diff * diff;
-                j += 1;
-            }
-            let var = var_sum / norm_size as f32;
-            let inv_std = 1.0 / (var + epsilon).sqrt();
-            let inv_std_v = unsafe { vdupq_n_f32(inv_std) };
-
-            // Normalize
-            j = 0;
-            while j + 4 <= norm_size {
-                unsafe {
+                
+                // Horizontal reduction
+                let mut sum = vgetq_lane_f32(sum_v0, 0)
+                    + vgetq_lane_f32(sum_v0, 1)
+                    + vgetq_lane_f32(sum_v0, 2)
+                    + vgetq_lane_f32(sum_v0, 3);
+                let mut sum_sq = vgetq_lane_f32(sum_sq_v0, 0)
+                    + vgetq_lane_f32(sum_sq_v0, 1)
+                    + vgetq_lane_f32(sum_sq_v0, 2)
+                    + vgetq_lane_f32(sum_sq_v0, 3);
+                
+                // Remaining scalar elements
+                while j < norm_size {
+                    let val = chunk[j];
+                    sum += val;
+                    sum_sq += val * val;
+                    j += 1;
+                }
+                
+                let mean = sum / norm_size as f32;
+                let var = (sum_sq / norm_size as f32) - (mean * mean);
+                let inv_std = 1.0 / (var + epsilon).sqrt();
+                
+                let mean_v = vdupq_n_f32(mean);
+                let inv_std_v = vdupq_n_f32(inv_std);
+                
+                // 4-way unrolled normalize
+                j = 0;
+                while j < unroll_end {
+                    let v0 = vld1q_f32(chunk.as_ptr().add(j));
+                    let v1 = vld1q_f32(chunk.as_ptr().add(j + 4));
+                    let v2 = vld1q_f32(chunk.as_ptr().add(j + 8));
+                    let v3 = vld1q_f32(chunk.as_ptr().add(j + 12));
+                    
+                    let g0 = vld1q_f32(gamma.as_ptr().add(j));
+                    let g1 = vld1q_f32(gamma.as_ptr().add(j + 4));
+                    let g2 = vld1q_f32(gamma.as_ptr().add(j + 8));
+                    let g3 = vld1q_f32(gamma.as_ptr().add(j + 12));
+                    
+                    let b0 = vld1q_f32(beta.as_ptr().add(j));
+                    let b1 = vld1q_f32(beta.as_ptr().add(j + 4));
+                    let b2 = vld1q_f32(beta.as_ptr().add(j + 8));
+                    let b3 = vld1q_f32(beta.as_ptr().add(j + 12));
+                    
+                    let c0 = vsubq_f32(v0, mean_v);
+                    let c1 = vsubq_f32(v1, mean_v);
+                    let c2 = vsubq_f32(v2, mean_v);
+                    let c3 = vsubq_f32(v3, mean_v);
+                    
+                    let n0 = vmulq_f32(c0, inv_std_v);
+                    let n1 = vmulq_f32(c1, inv_std_v);
+                    let n2 = vmulq_f32(c2, inv_std_v);
+                    let n3 = vmulq_f32(c3, inv_std_v);
+                    
+                    let r0 = vfmaq_f32(b0, n0, g0);
+                    let r1 = vfmaq_f32(b1, n1, g1);
+                    let r2 = vfmaq_f32(b2, n2, g2);
+                    let r3 = vfmaq_f32(b3, n3, g3);
+                    
+                    vst1q_f32(out_chunk.as_mut_ptr().add(j), r0);
+                    vst1q_f32(out_chunk.as_mut_ptr().add(j + 4), r1);
+                    vst1q_f32(out_chunk.as_mut_ptr().add(j + 8), r2);
+                    vst1q_f32(out_chunk.as_mut_ptr().add(j + 12), r3);
+                    
+                    j += 16;
+                }
+                
+                // Cleanup remaining elements
+                while j < simd_end {
                     let v = vld1q_f32(chunk.as_ptr().add(j));
                     let g = vld1q_f32(gamma.as_ptr().add(j));
                     let b = vld1q_f32(beta.as_ptr().add(j));
                     
-                    let diff = vsubq_f32(v, mean_v);
-                    let norm = vmulq_f32(diff, inv_std_v);
-                    let res = vfmaq_f32(b, norm, g);
-                    vst1q_f32(out_chunk.as_mut_ptr().add(j), res);
+                    let centered = vsubq_f32(v, mean_v);
+                    let normalized = vmulq_f32(centered, inv_std_v);
+                    let result = vfmaq_f32(b, normalized, g);
+                    vst1q_f32(out_chunk.as_mut_ptr().add(j), result);
+                    j += 4;
                 }
-                j += 4;
-            }
-            while j < norm_size {
-                out_chunk[j] = (chunk[j] - mean) * inv_std * gamma[j] + beta[j];
-                j += 1;
+                
+                // Remaining scalar elements
+                while j < norm_size {
+                    out_chunk[j] = (chunk[j] - mean) * inv_std * gamma[j] + beta[j];
+                    j += 1;
+                }
             }
         }
     }

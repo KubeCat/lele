@@ -9,16 +9,18 @@ use core::arch::asm;
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn vdotq_u32_custom(mut acc: uint32x4_t, a: uint8x16_t, b: uint8x16_t) -> uint32x4_t { unsafe {
-    asm!(
-        "udot {acc:v}.4s, {a:v}.16b, {b:v}.16b",
-        acc = inout(vreg) acc,
-        a = in(vreg) a,
-        b = in(vreg) b,
-        options(nostack)
-    );
-    acc
-}}
+unsafe fn vdotq_u32_custom(mut acc: uint32x4_t, a: uint8x16_t, b: uint8x16_t) -> uint32x4_t {
+    unsafe {
+        asm!(
+            "udot {acc:v}.4s, {a:v}.16b, {b:v}.16b",
+            acc = inout(vreg) acc,
+            a = in(vreg) a,
+            b = in(vreg) b,
+            options(nostack)
+        );
+        acc
+    }
+}
 
 pub fn dynamic_quantize_linear<'a, 'b>(
     x: &TensorView<'b, f32>,
@@ -39,16 +41,63 @@ pub fn dynamic_quantize_linear<'a, 'b>(
             TensorView::from_owned(vec![0.0], vec![1]),
         );
     }
-    let mut min_val = f32::MAX;
-    let mut max_val = f32::MIN;
-    for &v in x.data.iter() {
-        if v < min_val {
-            min_val = v;
+
+    // SIMD-optimized min/max finding
+    #[cfg(target_arch = "aarch64")]
+    let (min_val, max_val) = unsafe {
+        let mut min_vec = vdupq_n_f32(f32::MAX);
+        let mut max_vec = vdupq_n_f32(f32::MIN);
+
+        let mut i = 0;
+        let simd_end = (len / 4) * 4;
+
+        while i < simd_end {
+            let v = vld1q_f32(x.data.as_ptr().add(i));
+            min_vec = vminq_f32(min_vec, v);
+            max_vec = vmaxq_f32(max_vec, v);
+            i += 4;
         }
-        if v > max_val {
-            max_val = v;
+
+        // Horizontal min/max
+        let min_arr = [
+            vgetq_lane_f32(min_vec, 0),
+            vgetq_lane_f32(min_vec, 1),
+            vgetq_lane_f32(min_vec, 2),
+            vgetq_lane_f32(min_vec, 3),
+        ];
+        let max_arr = [
+            vgetq_lane_f32(max_vec, 0),
+            vgetq_lane_f32(max_vec, 1),
+            vgetq_lane_f32(max_vec, 2),
+            vgetq_lane_f32(max_vec, 3),
+        ];
+
+        let mut min_val = min_arr.iter().fold(f32::MAX, |a, &b| a.min(b));
+        let mut max_val = max_arr.iter().fold(f32::MIN, |a, &b| a.max(b));
+
+        // Process remaining elements
+        for &v in &x.data[simd_end..] {
+            min_val = min_val.min(v);
+            max_val = max_val.max(v);
         }
-    }
+
+        (min_val, max_val)
+    };
+
+    #[cfg(not(target_arch = "aarch64"))]
+    let (min_val, max_val) = {
+        let mut min_val = f32::MAX;
+        let mut max_val = f32::MIN;
+        for &v in x.data.iter() {
+            if v < min_val {
+                min_val = v;
+            }
+            if v > max_val {
+                max_val = v;
+            }
+        }
+        (min_val, max_val)
+    };
 
     let adjusted_max = max_val.max(0.0);
     let adjusted_min = min_val.min(0.0);
@@ -62,10 +111,40 @@ pub fn dynamic_quantize_linear<'a, 'b>(
     out_zp[0] = zp;
     utils::ensure_capacity(out_y, len);
 
-    let inv_scale = 1.0 / scale;
-    for i in 0..len {
-        out_y[i] = (x.data[i] * inv_scale + zp).round().clamp(0.0, 255.0);
+    // SIMD-optimized quantization
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let inv_scale_vec = vdupq_n_f32(1.0 / scale);
+        let zp_vec = vdupq_n_f32(zp);
+        let zero_vec = vdupq_n_f32(0.0);
+        let max_vec = vdupq_n_f32(255.0);
+
+        let mut i = 0;
+        let simd_end = (len / 4) * 4;
+
+        while i < simd_end {
+            let v = vld1q_f32(x.data.as_ptr().add(i));
+            let scaled = vmulq_f32(v, inv_scale_vec);
+            let rounded = vrndnq_f32(vaddq_f32(scaled, zp_vec));
+            let clamped = vminq_f32(vmaxq_f32(rounded, zero_vec), max_vec);
+            vst1q_f32(out_y.as_mut_ptr().add(i), clamped);
+            i += 4;
+        }
+
+        // Process remaining elements
+        for j in simd_end..len {
+            out_y[j] = (x.data[j] / scale + zp).round().clamp(0.0, 255.0);
+        }
     }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let inv_scale = 1.0 / scale;
+        for i in 0..len {
+            out_y[i] = (x.data[i] * inv_scale + zp).round().clamp(0.0, 255.0);
+        }
+    }
+
     (
         TensorView {
             data: Cow::Borrowed(out_y),
@@ -217,6 +296,9 @@ pub fn mat_mul_integer_u8<'a, 'b, 'c>(
     b: &TensorView<'c, u8>,
     a_zero_point: Option<&TensorView<'b, u8>>,
     b_zero_point: Option<&TensorView<'c, u8>>,
+    scale: Option<&TensorView<'b, f32>>, // NEW: Optional scale for dequantization
+    bias: Option<&TensorView<'b, f32>>,  // NEW: Optional bias for fusion
+    apply_relu: bool,                    // NEW: Apply ReLU activation
     out: &'a mut Vec<f32>,
 ) -> TensorView<'a, f32> {
     let zp_a = a_zero_point.map(|z| z.data[0] as i32).unwrap_or(0);
@@ -403,9 +485,66 @@ pub fn mat_mul_integer_u8<'a, 'b, 'c>(
 
                     let mut k_idx = 0;
                     let mut pb_ptr = packed_b.as_ptr();
+                    let a_ptr = row_a.as_ptr();
 
+                    // Main loop: 4x unrolled (process 16 K elements per iteration)
+                    let k_unroll = (k / 16) * 16;
+                    while k_idx < k_unroll {
+                        // Unroll 1: k_idx+0
+                        let a_val0 = core::ptr::read_unaligned(a_ptr.add(k_idx) as *const u32);
+                        let va0 = vreinterpretq_u8_u32(vdupq_n_u32(a_val0));
+                        let vb0_0 = vld1q_u8(pb_ptr);
+                        let vb0_1 = vld1q_u8(pb_ptr.add(16));
+                        let vb0_2 = vld1q_u8(pb_ptr.add(32));
+                        let vb0_3 = vld1q_u8(pb_ptr.add(48));
+                        acc0 = vdotq_u32_custom(acc0, va0, vb0_0);
+                        acc1 = vdotq_u32_custom(acc1, va0, vb0_1);
+                        acc2 = vdotq_u32_custom(acc2, va0, vb0_2);
+                        acc3 = vdotq_u32_custom(acc3, va0, vb0_3);
+
+                        // Unroll 2: k_idx+4
+                        let a_val1 = core::ptr::read_unaligned(a_ptr.add(k_idx + 4) as *const u32);
+                        let va1 = vreinterpretq_u8_u32(vdupq_n_u32(a_val1));
+                        let vb1_0 = vld1q_u8(pb_ptr.add(64));
+                        let vb1_1 = vld1q_u8(pb_ptr.add(80));
+                        let vb1_2 = vld1q_u8(pb_ptr.add(96));
+                        let vb1_3 = vld1q_u8(pb_ptr.add(112));
+                        acc0 = vdotq_u32_custom(acc0, va1, vb1_0);
+                        acc1 = vdotq_u32_custom(acc1, va1, vb1_1);
+                        acc2 = vdotq_u32_custom(acc2, va1, vb1_2);
+                        acc3 = vdotq_u32_custom(acc3, va1, vb1_3);
+
+                        // Unroll 3: k_idx+8
+                        let a_val2 = core::ptr::read_unaligned(a_ptr.add(k_idx + 8) as *const u32);
+                        let va2 = vreinterpretq_u8_u32(vdupq_n_u32(a_val2));
+                        let vb2_0 = vld1q_u8(pb_ptr.add(128));
+                        let vb2_1 = vld1q_u8(pb_ptr.add(144));
+                        let vb2_2 = vld1q_u8(pb_ptr.add(160));
+                        let vb2_3 = vld1q_u8(pb_ptr.add(176));
+                        acc0 = vdotq_u32_custom(acc0, va2, vb2_0);
+                        acc1 = vdotq_u32_custom(acc1, va2, vb2_1);
+                        acc2 = vdotq_u32_custom(acc2, va2, vb2_2);
+                        acc3 = vdotq_u32_custom(acc3, va2, vb2_3);
+
+                        // Unroll 4: k_idx+12
+                        let a_val3 = core::ptr::read_unaligned(a_ptr.add(k_idx + 12) as *const u32);
+                        let va3 = vreinterpretq_u8_u32(vdupq_n_u32(a_val3));
+                        let vb3_0 = vld1q_u8(pb_ptr.add(192));
+                        let vb3_1 = vld1q_u8(pb_ptr.add(208));
+                        let vb3_2 = vld1q_u8(pb_ptr.add(224));
+                        let vb3_3 = vld1q_u8(pb_ptr.add(240));
+                        acc0 = vdotq_u32_custom(acc0, va3, vb3_0);
+                        acc1 = vdotq_u32_custom(acc1, va3, vb3_1);
+                        acc2 = vdotq_u32_custom(acc2, va3, vb3_2);
+                        acc3 = vdotq_u32_custom(acc3, va3, vb3_3);
+
+                        pb_ptr = pb_ptr.add(256);
+                        k_idx += 16;
+                    }
+
+                    // Cleanup loop: handle remaining K < 16
                     while k_idx < k {
-                        let val_ptr = row_a.as_ptr().add(k_idx) as *const u32;
+                        let val_ptr = a_ptr.add(k_idx) as *const u32;
                         let a_val = if k_idx + 4 <= k {
                             core::ptr::read_unaligned(val_ptr)
                         } else {
@@ -439,10 +578,46 @@ pub fn mat_mul_integer_u8<'a, 'b, 'c>(
                     let existing2 = vld1q_f32(ptr_out.add(8));
                     let existing3 = vld1q_f32(ptr_out.add(12));
 
-                    vst1q_f32(ptr_out, vaddq_f32(existing0, vcvtq_f32_u32(acc0)));
-                    vst1q_f32(ptr_out.add(4), vaddq_f32(existing1, vcvtq_f32_u32(acc1)));
-                    vst1q_f32(ptr_out.add(8), vaddq_f32(existing2, vcvtq_f32_u32(acc2)));
-                    vst1q_f32(ptr_out.add(12), vaddq_f32(existing3, vcvtq_f32_u32(acc3)));
+                    let mut result0 = vaddq_f32(existing0, vcvtq_f32_u32(acc0));
+                    let mut result1 = vaddq_f32(existing1, vcvtq_f32_u32(acc1));
+                    let mut result2 = vaddq_f32(existing2, vcvtq_f32_u32(acc2));
+                    let mut result3 = vaddq_f32(existing3, vcvtq_f32_u32(acc3));
+
+                    // Fused scale multiplication if provided (broadcast scalar)
+                    if let Some(scale_data) = scale {
+                        let scale_val = vdupq_n_f32(scale_data.data[0]);
+                        result0 = vmulq_f32(result0, scale_val);
+                        result1 = vmulq_f32(result1, scale_val);
+                        result2 = vmulq_f32(result2, scale_val);
+                        result3 = vmulq_f32(result3, scale_val);
+                    }
+
+                    // Fused bias add if provided (per-column)
+                    if let Some(bias_data) = bias {
+                        let bias0 = vld1q_f32(bias_data.data.as_ptr().add(j));
+                        let bias1 = vld1q_f32(bias_data.data.as_ptr().add(j + 4));
+                        let bias2 = vld1q_f32(bias_data.data.as_ptr().add(j + 8));
+                        let bias3 = vld1q_f32(bias_data.data.as_ptr().add(j + 12));
+
+                        result0 = vaddq_f32(result0, bias0);
+                        result1 = vaddq_f32(result1, bias1);
+                        result2 = vaddq_f32(result2, bias2);
+                        result3 = vaddq_f32(result3, bias3);
+                    }
+
+                    // Fused ReLU activation if requested
+                    if apply_relu {
+                        let zero = vdupq_n_f32(0.0);
+                        result0 = vmaxq_f32(result0, zero);
+                        result1 = vmaxq_f32(result1, zero);
+                        result2 = vmaxq_f32(result2, zero);
+                        result3 = vmaxq_f32(result3, zero);
+                    }
+
+                    vst1q_f32(ptr_out, result0);
+                    vst1q_f32(ptr_out.add(4), result1);
+                    vst1q_f32(ptr_out.add(8), result2);
+                    vst1q_f32(ptr_out.add(12), result3);
                 }
             }
             j += 16;
@@ -459,6 +634,21 @@ pub fn mat_mul_integer_u8<'a, 'b, 'c>(
                     sum += (row_a[k_idx] as i32) * (b_slice[k_idx * n + j] as i32);
                 }
                 row_out[j] += sum as f32;
+
+                // Fused scale multiplication for remainder (broadcast scalar)
+                if let Some(scale_data) = scale {
+                    row_out[j] *= scale_data.data[0];
+                }
+
+                // Fused bias add for remainder (per-column)
+                if let Some(bias_data) = bias {
+                    row_out[j] += bias_data.data[j];
+                }
+
+                // Fused ReLU activation for remainder
+                if apply_relu && row_out[j] < 0.0 {
+                    row_out[j] = 0.0;
+                }
             }
             j += 1;
         }

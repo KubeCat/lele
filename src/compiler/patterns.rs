@@ -119,6 +119,123 @@ pub fn get_default_patterns() -> Vec<Pattern> {
             }),
         },
         Pattern {
+            name: "Quantized Linear + ReLU".to_string(),
+            matcher: Box::new(|nodes: &[&NodeProto]| -> Option<usize> {
+                if nodes.len() < 7 {
+                    return None;
+                }
+                // Match the quantized linear pattern first (6 nodes)
+                if nodes[0].op_type != "DynamicQuantizeLinear" {
+                    return None;
+                }
+                if nodes[1].op_type != "Mul" {
+                    return None;
+                }
+                if nodes[2].op_type != "MatMulInteger" {
+                    return None;
+                }
+                if nodes[3].op_type != "Cast" {
+                    return None;
+                }
+                if nodes[4].op_type != "Mul" {
+                    return None;
+                }
+                if nodes[5].op_type != "Add" {
+                    return None;
+                }
+                // Then check for ReLU
+                if nodes[6].op_type != "Relu" {
+                    return None;
+                }
+                // Verify the ReLU input is the Add output
+                let add_output = &nodes[5].output[0];
+                if nodes[6].input[0] != *add_output {
+                    return None;
+                }
+                // Verify the quantized linear pattern connections
+                let q = &nodes[0].output[0];
+                let s = &nodes[0].output[1];
+                let z = &nodes[0].output[2];
+                if q.is_empty() || s.is_empty() || z.is_empty() {
+                    return None;
+                }
+                if nodes[1].input[0] != *s && nodes[1].input.get(1) != Some(s) {
+                    return None;
+                }
+                let combined_scale = &nodes[1].output[0];
+                if nodes[2].input[0] != *q {
+                    return None;
+                }
+                if nodes[2].input.len() < 3 || nodes[2].input[2] != *z {
+                    return None;
+                }
+                let mm = &nodes[2].output[0];
+                if nodes[3].input[0] != *mm {
+                    return None;
+                }
+                let mm_cast = &nodes[3].output[0];
+                if nodes[4].input[0] != *mm_cast && nodes[4].input.get(1) != Some(mm_cast) {
+                    return None;
+                }
+                if nodes[4].input[0] != *combined_scale
+                    && nodes[4].input.get(1) != Some(combined_scale)
+                {
+                    return None;
+                }
+                let dequant = &nodes[4].output[0];
+                if nodes[5].input[0] != *dequant && nodes[5].input.get(1) != Some(dequant) {
+                    return None;
+                }
+                Some(7)
+            }),
+            generator: Box::new(|nodes, weights, allocator, w, indent| {
+                let input = sanitize_name(&nodes[0].input[0]);
+                let get_weight = |name: &str| -> String {
+                    let s = sanitize_name(name);
+                    if let Some((o, l, sh, dt)) = weights.get(&s) {
+                        match dt {
+                            1 => format!("self.weight_f32({}, {}, &{:?})", o, l, sh),
+                            2 => format!("self.weight_u8({}, {}, &{:?})", o, l, sh),
+                            3 => format!("self.weight_i8({}, {}, &{:?})", o, l, sh),
+                            6 => format!("self.weight_i32({}, {}, &{:?})", o, l, sh),
+                            7 => format!("self.weight_i64({}, {}, &{:?})", o, l, sh),
+                            10 => format!("self.weight_f16({}, {}, &{:?})", o, l, sh),
+                            _ => format!("self.weight_f32({}, {}, &{:?})", o, l, sh),
+                        }
+                    } else {
+                        s
+                    }
+                };
+                let weight_int8 = get_weight(&nodes[2].input[1]);
+                let s_name = &nodes[0].output[1];
+                let ws_name = if nodes[1].input[0] == *s_name {
+                    &nodes[1].input[1]
+                } else {
+                    &nodes[1].input[0]
+                };
+                let weight_scale = get_weight(ws_name);
+                let weight_zero = get_weight(&nodes[2].input[3]);
+                let dequant = &nodes[4].output[0];
+                let bias_name = if nodes[5].input[0] == *dequant {
+                    &nodes[5].input[1]
+                } else {
+                    &nodes[5].input[0]
+                };
+                let bias = get_weight(bias_name);
+                let output_name = sanitize_name(&nodes[6].output[0]);
+                let tab = "    ".repeat(indent);
+                // Always allocate a new buffer for ReLU pattern since allocator doesn't know about patterns
+                writeln!(w, "{}let mut buf_{} = Vec::<f32>::new();", tab, output_name)?;
+                let buf_expr = format!("&mut buf_{}", output_name);
+                writeln!(
+                    w,
+                    "{}let {} = self.linear_quantized_relu(&{}, {}, {}, {}, {}, {});",
+                    tab, output_name, input, weight_int8, weight_scale, weight_zero, bias, buf_expr
+                )?;
+                Ok(())
+            }),
+        },
+        Pattern {
             name: "Quantized Linear".to_string(),
             matcher: Box::new(|nodes: &[&NodeProto]| -> Option<usize> {
                 if nodes.len() < 6 {

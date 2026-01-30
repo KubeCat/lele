@@ -220,7 +220,7 @@ fn main() {
     let (most_common_token, count) = token_counts
         .iter()
         .enumerate()
-        .max_by_key(|(_, &count)| count)
+        .max_by_key(|&(_, count)| count)
         .unwrap();
     println!(
         "Most common predicted token: {} ({}/{} time steps = {:.1}%)",

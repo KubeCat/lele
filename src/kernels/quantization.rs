@@ -8,6 +8,76 @@ pub fn mat_mul_integer<'a, 'b, 'c>(
     b_zero_point: Option<&TensorView<'c, f32>>,
     out: &'a mut Vec<f32>,
 ) -> TensorView<'a, f32> {
+    mat_mul_integer_with_scale_bias(a, b, a_zero_point, b_zero_point, None, None, out)
+}
+
+// MatMulInteger with optional bias fusion (backward compatibility)
+pub fn mat_mul_integer_with_bias<'a, 'b, 'c>(
+    a: &TensorView<'b, f32>,
+    b: &TensorView<'c, f32>,
+    a_zero_point: Option<&TensorView<'b, f32>>,
+    b_zero_point: Option<&TensorView<'c, f32>>,
+    bias: Option<&TensorView<'b, f32>>,
+    out: &'a mut Vec<f32>,
+) -> TensorView<'a, f32> {
+    mat_mul_integer_with_scale_bias(a, b, a_zero_point, b_zero_point, None, bias, out)
+}
+
+// MatMulInteger with optional scale and bias fusion (full fusion)
+pub fn mat_mul_integer_with_scale_bias<'a, 'b, 'c>(
+    a: &TensorView<'b, f32>,
+    b: &TensorView<'c, f32>,
+    a_zero_point: Option<&TensorView<'b, f32>>,
+    b_zero_point: Option<&TensorView<'c, f32>>,
+    scale: Option<&TensorView<'b, f32>>,
+    bias: Option<&TensorView<'b, f32>>,
+    out: &'a mut Vec<f32>,
+) -> TensorView<'a, f32> {
+    mat_mul_integer_with_scale_bias_activation(
+        a,
+        b,
+        a_zero_point,
+        b_zero_point,
+        scale,
+        bias,
+        false,
+        out,
+    )
+}
+
+// MatMulInteger with optional scale, bias, and ReLU fusion
+pub fn mat_mul_integer_with_scale_bias_relu<'a, 'b, 'c>(
+    a: &TensorView<'b, f32>,
+    b: &TensorView<'c, f32>,
+    a_zero_point: Option<&TensorView<'b, f32>>,
+    b_zero_point: Option<&TensorView<'c, f32>>,
+    scale: Option<&TensorView<'b, f32>>,
+    bias: Option<&TensorView<'b, f32>>,
+    out: &'a mut Vec<f32>,
+) -> TensorView<'a, f32> {
+    mat_mul_integer_with_scale_bias_activation(
+        a,
+        b,
+        a_zero_point,
+        b_zero_point,
+        scale,
+        bias,
+        true,
+        out,
+    )
+}
+
+// Internal function with activation parameter
+fn mat_mul_integer_with_scale_bias_activation<'a, 'b, 'c>(
+    a: &TensorView<'b, f32>,
+    b: &TensorView<'c, f32>,
+    a_zero_point: Option<&TensorView<'b, f32>>,
+    b_zero_point: Option<&TensorView<'c, f32>>,
+    scale: Option<&TensorView<'b, f32>>,
+    bias: Option<&TensorView<'b, f32>>,
+    apply_relu: bool,
+    out: &'a mut Vec<f32>,
+) -> TensorView<'a, f32> {
     // Convert f32 tensors to u8 for actual computation
     let a_u8: Vec<u8> = a.data.iter().map(|&x| x as u8).collect();
     let b_u8: Vec<u8> = b.data.iter().map(|&x| x as u8).collect();
@@ -29,6 +99,9 @@ pub fn mat_mul_integer<'a, 'b, 'c>(
         &b_u8_view,
         a_zp_u8.as_ref(),
         b_zp_u8.as_ref(),
+        scale,
+        bias,
+        apply_relu,
         out,
     )
 }
@@ -39,6 +112,9 @@ fn mat_mul_integer_u8<'a, 'b, 'c>(
     b: &TensorView<'c, u8>,
     a_zero_point: Option<&TensorView<'b, u8>>,
     b_zero_point: Option<&TensorView<'c, u8>>,
+    scale: Option<&TensorView<'b, f32>>,
+    bias: Option<&TensorView<'b, f32>>,
+    apply_relu: bool,
     out: &'a mut Vec<f32>,
 ) -> TensorView<'a, f32> {
     #[cfg(target_arch = "aarch64")]
@@ -48,6 +124,9 @@ fn mat_mul_integer_u8<'a, 'b, 'c>(
             b,
             a_zero_point,
             b_zero_point,
+            scale,
+            bias,
+            apply_relu,
             out,
         )
     }
@@ -96,6 +175,22 @@ fn mat_mul_integer_u8<'a, 'b, 'c>(
                         let val_b = b_data[l * n + j] as f32 - zp_b;
                         sum += val_a * val_b;
                     }
+
+                    // Apply scale if provided (broadcast scalar)
+                    if let Some(scale_data) = scale {
+                        sum *= scale_data.data[0];
+                    }
+
+                    // Apply bias if provided (per-column)
+                    if let Some(bias_data) = bias {
+                        sum += bias_data.data[j];
+                    }
+
+                    // Apply ReLU if requested
+                    if apply_relu && sum < 0.0 {
+                        sum = 0.0;
+                    }
+
                     out_data[i * n + j] = sum;
                 }
             }

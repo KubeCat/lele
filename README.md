@@ -8,17 +8,17 @@ It rejects the "general-purpose runtime" approach (wrapping C++ libs like ORT or
 
 `lele` is designed to run deep learning models (specifically speech-related ones like SenseVoice, Silero VAD, and TTS) with minimal overhead. It avoids heavy runtimes like ONNX Runtime or `burn` by compiling ONNX graphs directly into optimized Rust source code.
 
-## Performance Benchmarks (2026-01-29)
+## Performance Benchmarks (2026-01-30)
 
 In-depth comparison between **lele** and **ONNX Runtime (CPU)** on macOS (Apple Silicon). All benchmarks run with single-thread affinity for fair comparison.
 
 | Model | ORT RTF (CPU) | lele RTF | Speedup |
 | :--- | :--- | :--- | :--- |
 | **Silero VAD** | 0.0031 | 0.0031 | - |
-| **SenseVoice** | **0.032** | 0.11 | 0.29x |
-| **Supertonic** | **0.1225** | 0.2335 | 0.52x |
+| **SenseVoice** | **0.032** | 0.096 | 0.33x |
+| **Supertonic** | **0.122** | 0.232 | 0.53x |
 
-*Note: RTF (Real-Time Factor) is defined as (Inference Time / Audio Duration). Lower is better. `lele` optimizations currently focus on transformer/convolution patterns found in large-scale ASR models.*
+*Note: RTF (Real-Time Factor) is defined as (Inference Time / Audio Duration). Lower is better.*
 
 
 **Why Not ORT/Burn?**
