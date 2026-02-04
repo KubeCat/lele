@@ -630,16 +630,107 @@ pub fn reduce_mean<'b, 'a>(
     for &ax in &resolved_axes {
         count *= input.shape[ax];
     }
-    let scale = 1.0 / count as f32;
-    for x in out.iter_mut() {
-        *x *= scale;
+        let scale = 1.0 / count as f32;
+        for x in out.iter_mut() {
+            *x *= scale;
+        }
+    
+        TensorView {
+            data: Cow::Borrowed(out),
+            shape: Cow::Owned(out_shape),
+        }
     }
-    TensorView {
-        data: Cow::Borrowed(out),
-        shape: Cow::Owned(out_shape),
+    
+    pub fn reduce_max<'b, 'a>(
+        input: &TensorView<'b>,
+        axes: &[i64],
+        keepdims: bool,
+        out: &'a mut Vec<f32>,
+    ) -> TensorView<'a> {
+        let dims = input.dim();
+        let mut resolved_axes: Vec<usize> = axes
+            .iter()
+            .map(|&x| {
+                if x < 0 {
+                    (dims as i64 + x) as usize
+                } else {
+                    x as usize
+                }
+            })
+            .collect();
+        resolved_axes.sort();
+        resolved_axes.dedup();
+    
+        let mut out_shape = Vec::new();
+        let mut reduce_mask = vec![false; dims];
+        for &ax in &resolved_axes {
+            reduce_mask[ax] = true;
+        }
+    
+        for i in 0..dims {
+            if !reduce_mask[i] {
+                out_shape.push(input.shape[i]);
+            } else if keepdims {
+                out_shape.push(1);
+            }
+        }
+    
+        let out_numel = out_shape.iter().product::<usize>();
+        if out.len() != out_numel {
+            out.resize(out_numel, f32::NEG_INFINITY);
+        }
+        out.fill(f32::NEG_INFINITY);
+    
+        let real_out_strides = crate::kernels::utils::compute_strides(&out_shape);
+        let mut input_to_out_strides = vec![0; dims];
+        let mut out_dim_idx = 0;
+        for i in 0..dims {
+            if reduce_mask[i] {
+                input_to_out_strides[i] = 0;
+                if keepdims {
+                    out_dim_idx += 1;
+                }
+            } else {
+                input_to_out_strides[i] = real_out_strides[out_dim_idx];
+                out_dim_idx += 1;
+            }
+        }
+    
+        let mut coords = vec![0; dims];
+        let total_elems = input.data.len();
+        let i_slice = &input.data;
+        let o_slice = out.as_mut_slice();
+    
+        for i in 0..total_elems {
+            let val = unsafe { *i_slice.get_unchecked(i) };
+            let mut out_off = 0;
+            for d in 0..dims {
+                out_off += coords[d] * input_to_out_strides[d];
+            }
+    
+            unsafe {
+                let current_max = o_slice.get_unchecked_mut(out_off);
+                if val > *current_max {
+                    *current_max = val;
+                }
+            }
+    
+            for d in (0..dims).rev() {
+                coords[d] += 1;
+                if coords[d] < input.shape[d] {
+                    break;
+                }
+                coords[d] = 0;
+            }
+        }
+    
+        TensorView {
+            data: Cow::Borrowed(out),
+            shape: Cow::Owned(out_shape),
+        }
     }
-}
-pub fn reduce_sum<'b, 'a>(
+    
+    pub fn reduce_sum<'b, 'a>(
     input: &TensorView<'b>,
     axes: &[i64],
     keepdims: bool,

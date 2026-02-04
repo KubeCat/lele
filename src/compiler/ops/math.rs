@@ -196,6 +196,28 @@ pub(crate) fn handle_math_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::io
                 tab, outputs[0], inputs[0], axes, keepdims, buf_expr
             )?;
         }
+        "ReduceMax" => {
+            let axes = ctx
+                .node
+                .attribute
+                .iter()
+                .find(|a| a.name == "axes")
+                .map(|a| a.ints.clone())
+                .unwrap_or(vec![]);
+            let keepdims = ctx
+                .node
+                .attribute
+                .iter()
+                .find(|a| a.name == "keepdims")
+                .map(|a| a.i)
+                .unwrap_or(1)
+                != 0;
+            writeln!(
+                w,
+                "{}let {} = lele::kernels::reduce_max(&{}, &{:?}, {}, {});",
+                tab, outputs[0], inputs[0], axes, keepdims, buf_expr
+            )?;
+        }
         "Range" => {
             let is_i64 = ctx.var_types.get(&inputs[0]).map(|t| t == "i64").unwrap_or(false)
                 || ctx.var_types.get(&inputs[1]).map(|t| t == "i64").unwrap_or(false)
