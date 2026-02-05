@@ -140,7 +140,7 @@ fn main() {
     println!("\nRunning forward pass...");
     let start = Instant::now();
 
-    let output = model.forward(speech, speech_lengths, language, text_norm);
+    let (output, _) = model.forward(speech, speech_lengths, language, text_norm);
 
     let elapsed = start.elapsed();
     let e2e_elapsed = e2e_start.elapsed();
