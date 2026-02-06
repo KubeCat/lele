@@ -1,6 +1,6 @@
 use crate::tensor::TensorView;
-use std::simd::{f32x8, i32x8, Simd};
-use std::simd::num::{SimdInt, SimdUint, SimdFloat};
+use std::simd::prelude::*;
+use std::simd::StdFloat;
 use rayon::prelude::*;
 
 // MatMulInteger operation: accepts f32 tensors and converts internally to u8
@@ -190,10 +190,10 @@ fn mat_mul_integer_u8<'a, 'b, 'c>(
                         if val_a == 0 { continue; }
 
                         let val_a_v = i32x8::splat(val_a);
-                        let b_slice = &b_base[l * n + j..l * n + j + 8];
-                        let b_vec = Simd::<u8, 8>::from_slice(b_slice).cast::<i32>();
+                        let b_slice = &b_base[l * n + j .. l * n + j + 8];
+                        let b_v = Simd::<u8, 8>::from_slice(b_slice).cast::<i32>();
                         
-                        acc_v += val_a_v * (b_vec - zp_b_v);
+                        acc_v += val_a_v * (b_v - zp_b_v);
                     }
 
                     let mut acc_f32 = acc_v.cast::<f32>();
@@ -275,13 +275,26 @@ pub fn dynamic_quantize_linear<'a, 'b>(
         
         let mut min_val = f32::MAX;
         let mut max_val = f32::MIN;
-        for &v in x.data.iter() {
-            if v < min_val {
-                min_val = v;
+
+        // Vectorized Min/Max
+        let (prefix, middle, suffix) = x.data.as_simd::<8>();
+        for &v in prefix {
+            if v < min_val { min_val = v; }
+            if v > max_val { max_val = v; }
+        }
+        if !middle.is_empty() {
+            let mut v_min = f32x8::splat(f32::MAX);
+            let mut v_max = f32x8::splat(f32::MIN);
+            for &v in middle {
+                v_min = v_min.simd_min(v);
+                v_max = v_max.simd_max(v);
             }
-            if v > max_val {
-                max_val = v;
-            }
+            min_val = min_val.min(v_min.reduce_min());
+            max_val = max_val.max(v_max.reduce_max());
+        }
+        for &v in suffix {
+            if v < min_val { min_val = v; }
+            if v > max_val { max_val = v; }
         }
 
         let adjusted_max = max_val.max(0.0);
@@ -297,12 +310,29 @@ pub fn dynamic_quantize_linear<'a, 'b>(
         out_zp.clear();
         out_zp.push(zp);
 
-        // Calculate and write directly to output
+        // Vectorized Quantization
         out_y_storage.clear();
-        out_y_storage.reserve(len);
-        for i in 0..len {
-            let q = (x.data[i] * inv_scale + zp).round().clamp(0.0, 255.0);
-            out_y_storage.push(q);
+        out_y_storage.resize(len, 0.0);
+        
+        let v_inv_scale = f32x8::splat(inv_scale);
+        let v_zp = f32x8::splat(zp);
+        let v_min_q = f32x8::splat(0.0);
+        let v_max_q = f32x8::splat(255.0);
+
+        let (prefix, middle, suffix) = x.data.as_simd::<8>();
+        let mut offset = 0;
+        for &v in prefix {
+            out_y_storage[offset] = (v * inv_scale + zp).round().clamp(0.0, 255.0);
+            offset += 1;
+        }
+        for &v in middle {
+            let q = (v * v_inv_scale + v_zp).round().simd_clamp(v_min_q, v_max_q);
+            q.copy_to_slice(&mut out_y_storage[offset..offset+8]);
+            offset += 8;
+        }
+        for &v in suffix {
+            out_y_storage[offset] = (v * inv_scale + zp).round().clamp(0.0, 255.0);
+            offset += 1;
         }
 
         (

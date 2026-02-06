@@ -1,4 +1,5 @@
 use super::super::generate::OpContext;
+use crate::compiler::sanitize_name;
 use std::io::Write;
 
 pub(crate) fn handle_tensor_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::io::Result<bool> {
@@ -140,11 +141,49 @@ pub(crate) fn handle_tensor_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::
                 .find(|a| a.name == "axis")
                 .map(|a| a.i)
                 .unwrap_or(0);
-            let args = inputs
-                .iter()
-                .map(|s| format!("&{}", s))
-                .collect::<Vec<_>>()
-                .join(", ");
+
+            let out_i64 = ctx
+                .var_types
+                .get(&outputs[0])
+                .map(|t| t == "i64")
+                .unwrap_or(false);
+
+            let mut arg_exprs = Vec::new();
+            for (i, inp_name_raw) in ctx.node.input.iter().enumerate() {
+                if inp_name_raw.is_empty() {
+                    continue;
+                }
+                let inp_name = sanitize_name(inp_name_raw);
+                let inp_i64 = ctx
+                    .var_types
+                    .get(&inp_name)
+                    .map(|t| t == "i64")
+                    .unwrap_or(false);
+
+                if inp_i64 == out_i64 {
+                    arg_exprs.push(format!("&{}", inputs[i]));
+                } else if out_i64 {
+                    let temp_name = format!("temp_cast_concat_{}_{}", i, outputs[0]);
+                    writeln!(w, "{}let mut {}_buf = Vec::<i64>::new();", tab, temp_name)?;
+                    writeln!(
+                        w,
+                        "{}let {} = lele::kernels::utils::cast_to_i64(&{}, &mut {}_buf);",
+                        tab, temp_name, inputs[i], temp_name
+                    )?;
+                    arg_exprs.push(format!("&{}", temp_name));
+                } else {
+                    let temp_name = format!("temp_cast_concat_{}_{}", i, outputs[0]);
+                    writeln!(w, "{}let mut {}_buf = Vec::<f32>::new();", tab, temp_name)?;
+                    writeln!(
+                        w,
+                        "{}let {} = lele::kernels::utils::cast_to_f32(&{}, &mut {}_buf);",
+                        tab, temp_name, inputs[i], temp_name
+                    )?;
+                    arg_exprs.push(format!("&{}", temp_name));
+                }
+            }
+
+            let args = arg_exprs.join(", ");
             writeln!(
                 w,
                 "{}let {} = lele::kernels::concat(&[{}], {}, {});",

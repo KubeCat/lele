@@ -271,7 +271,8 @@ pub(crate) fn infer_variable_types(
                 }
                 "Reshape" | "Unsqueeze" | "Squeeze" | "Slice" | "Flatten" | "Transpose"
                 | "Identity" | "Add" | "Sub" | "Mul" | "Div" | "Tile" | "Split" | "Expand"
-                | "Pow" | "Exp" | "Log" | "Sqrt" | "Relu" | "Sigmoid" | "Tanh" => {
+                | "Pow" | "Exp" | "Log" | "Sqrt" | "Relu" | "Sigmoid" | "Tanh" | "Clip"
+                | "PRelu" | "LeakyRelu" => {
                     // All data-carrying inputs and outputs share the same type
                     // For Pad, only the first input (data) determines the output type, not pads or constant_value
                     let relevant_inputs: Vec<String> = if op == "Pad" {

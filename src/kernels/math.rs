@@ -962,12 +962,41 @@ pub fn less<'b, 'a>(
 ) -> TensorView<'a> {
     broadcast_binary_op(a, b, out, |x, y| if x < y { 1.0 } else { 0.0 })
 }
-pub fn less_i64<'b, 'a>(
-    a: &TensorView<'b, i64>,
-    b: &TensorView<'b, i64>,
-    out: &'a mut Vec<f32>,
-) -> TensorView<'a> {
-    broadcast_binary_op_i64_to_f32(a, b, out, |x, y| if x < y { 1.0 } else { 0.0 })
+pub fn less_i64<'b, 'a, T: ElementOps>(
+    a: &TensorView<'b, T>,
+    b: &TensorView<'b, T>,
+    out: &'a mut Vec<i64>,
+) -> TensorView<'a, i64> {
+    let out_shape = utils::broadcast_shapes(&a.shape, &b.shape).expect("Shapes not broadcastable");
+    let numel = out_shape.iter().product::<usize>();
+    utils::ensure_capacity(out, numel);
+    unsafe {
+        out.set_len(numel);
+    }
+
+    if a.data.len() == 1 && b.data.len() == 1 {
+        out[0] = if a.data[0] < b.data[0] { 1 } else { 0 };
+    } else if a.data.len() == 1 {
+        let val_a = a.data[0];
+        for i in 0..numel {
+            out[i] = if val_a < b.data[i] { 1 } else { 0 };
+        }
+    } else if b.data.len() == 1 {
+        let val_b = b.data[0];
+        for i in 0..numel {
+            out[i] = if a.data[i] < val_b { 1 } else { 0 };
+        }
+    } else if a.data.len() == b.data.len() {
+        for i in 0..numel {
+            out[i] = if a.data[i] < b.data[i] { 1 } else { 0 };
+        }
+    } else {
+        panic!("less_i64: complex broadcast not implemented inline");
+    }
+    TensorView {
+        data: Cow::Borrowed(out),
+        shape: Cow::Owned(out_shape),
+    }
 }
 pub fn expand<'b, 'a, T: Clone + Copy + std::fmt::Debug>(
     input: &TensorView<'b, T>,
