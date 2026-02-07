@@ -4,7 +4,7 @@ mod tokenizer;
 
 use audio::WavReader;
 use lele::features::{Cmvn, FeatureConfig, SenseVoiceFrontend};
-use lele::tensor::TensorView;
+use lele::tensor::{IntoLogits, TensorView};
 use std::env;
 use std::time::Instant;
 use tokenizer::Tokenizer;
@@ -14,9 +14,10 @@ fn main() {
 
     // Load model weights
     println!("Loading SenseVoice weights...");
-    let bin = std::fs::read("examples/sensevoice/sensevoice_weights.bin")
+    let bin = std::fs::read("examples/sensevoice/src/sensevoice_weights.bin")
+        .or_else(|_| std::fs::read("examples/sensevoice/sensevoice_weights.bin"))
         .or_else(|_| std::fs::read("sensevoice_weights.bin"))
-        .expect("Failed to load weights. Make sure sensevoice_weights.bin is in the current directory or examples/sensevoice/");
+        .expect("Failed to load weights. Make sure sensevoice_weights.bin is in examples/sensevoice/src/");
 
     let model = sensevoice::SenseVoice::new(&bin);
     println!(
@@ -51,7 +52,6 @@ fn main() {
         );
         (vec![0.01; num_samples], sr)
     };
-
 
     // Create frontend pipeline
     println!("--- Feature Extraction ---");
@@ -89,14 +89,13 @@ fn main() {
         normalized_features.shape,
         start.elapsed().as_secs_f64() * 1000.0
     );
-     // Dump features for Python verification
+    // Dump features for Python verification
     use std::io::Write;
     let mut file = std::fs::File::create("features.bin").unwrap();
     for x in normalized_features.data.iter() {
         file.write_all(&x.to_le_bytes()).unwrap();
     }
     println!("✓ Dumped features to features.bin");
-
 
     // Debug: Print feature statistics
     let feat_min = normalized_features
@@ -140,7 +139,9 @@ fn main() {
     println!("\nRunning forward pass...");
     let start = Instant::now();
 
-    let output = model.forward(speech, speech_lengths, language, text_norm);
+    let output = model
+        .forward(speech, speech_lengths, language, text_norm)
+        .into_logits();
 
     let elapsed = start.elapsed();
     let e2e_elapsed = e2e_start.elapsed();
@@ -192,7 +193,7 @@ fn main() {
             .unwrap();
 
         if max_idx != 0 {
-             println!("  t={}: {} ({:.2})", t, max_idx, max_val);
+            println!("  t={}: {} ({:.2})", t, max_idx, max_val);
         }
     }
 

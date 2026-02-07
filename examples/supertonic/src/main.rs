@@ -163,6 +163,8 @@ impl<'a> SupertonicTts<'a> {
                 style_dp_tv,
                 text_mask_tv.clone(),
             );
+            println!("Debug: duration_tv shape: {:?}", duration_tv.shape);
+            println!("Debug: duration_tv data len: {}", duration_tv.data.len());
             let mut duration = duration_tv.data.to_vec();
             println!("Debug: Num tokens: {}", duration.len());
             println!("Debug: First 5 durations: {:?}", duration.iter().take(5).collect::<Vec<_>>());
@@ -213,21 +215,7 @@ impl<'a> SupertonicTts<'a> {
                 xt_data = denoised_tv.data.to_vec();
             }
 
-            // Apply latent mask
-            let latent_len = xt_shape[2];
-            let latent_dim = xt_shape[1];
-            for d in 0..latent_dim {
-                for t in 0..latent_len {
-                    xt_data[d * latent_len + t] *= latent_mask_data[t];
-                }
-            }
-
             // 4. Vocoder
-            // Normalize latent before vocoder
-            for x in xt_data.iter_mut() {
-                *x *= 0.25;
-            }
-
             let xt_tv = TensorView::new(&xt_data, &xt_shape);
             let audio_tv = self.vocoder.forward(xt_tv);
 

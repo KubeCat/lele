@@ -102,7 +102,7 @@ fn test_matmul_integer_per_channel_scale() {
     let expected = vec![35.0, 200.0];
     
     assert_eq!(out.shape.as_ref(), &[1, 2]);
-    for (i, (val, exp)) in out.data.iter().zip(expected.iter()).enumerate() {
+    for (_, (val, exp)) in out.data.iter().zip(expected.iter()).enumerate() {
         assert_abs_diff_eq!(val, exp, epsilon = 1e-5); 
         // If it was using scalar scale (0.5), idx 1 would be 50.0, failing this test.
     }

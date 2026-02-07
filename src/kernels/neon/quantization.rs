@@ -579,13 +579,24 @@ pub fn mat_mul_integer_u8<'a, 'b, 'c>(
                     let mut result2 = vaddq_f32(existing2, vcvtq_f32_u32(acc2));
                     let mut result3 = vaddq_f32(existing3, vcvtq_f32_u32(acc3));
 
-                    // Fused scale multiplication if provided (broadcast scalar)
+                    // Fused scale multiplication if provided
                     if let Some(scale_data) = scale {
-                        let scale_val = vdupq_n_f32(scale_data.data[0]);
-                        result0 = vmulq_f32(result0, scale_val);
-                        result1 = vmulq_f32(result1, scale_val);
-                        result2 = vmulq_f32(result2, scale_val);
-                        result3 = vmulq_f32(result3, scale_val);
+                        if scale_data.data.len() == 1 {
+                            let scale_val = vdupq_n_f32(scale_data.data[0]);
+                            result0 = vmulq_f32(result0, scale_val);
+                            result1 = vmulq_f32(result1, scale_val);
+                            result2 = vmulq_f32(result2, scale_val);
+                            result3 = vmulq_f32(result3, scale_val);
+                        } else {
+                            let s0 = vld1q_f32(scale_data.data.as_ptr().add(j));
+                            let s1 = vld1q_f32(scale_data.data.as_ptr().add(j + 4));
+                            let s2 = vld1q_f32(scale_data.data.as_ptr().add(j + 8));
+                            let s3 = vld1q_f32(scale_data.data.as_ptr().add(j + 12));
+                            result0 = vmulq_f32(result0, s0);
+                            result1 = vmulq_f32(result1, s1);
+                            result2 = vmulq_f32(result2, s2);
+                            result3 = vmulq_f32(result3, s3);
+                        }
                     }
 
                     // Fused bias add if provided (per-column)
@@ -631,9 +642,13 @@ pub fn mat_mul_integer_u8<'a, 'b, 'c>(
                 }
                 row_out[j] += sum as f32;
 
-                // Fused scale multiplication for remainder (broadcast scalar)
+                // Fused scale multiplication for remainder
                 if let Some(scale_data) = scale {
-                    row_out[j] *= scale_data.data[0];
+                    if scale_data.data.len() == 1 {
+                        row_out[j] *= scale_data.data[0];
+                    } else {
+                        row_out[j] *= scale_data.data[j];
+                    }
                 }
 
                 // Fused bias add for remainder (per-column)

@@ -32,7 +32,7 @@ impl<'a> CLASSNAME<'a> {
     // Customize forward method based on main.rs usage
     let forward_sig = match class_name {
         "DurationPredictor" | "TextEncoder" => 
-            "    pub fn forward<'w>(&self, _a: TensorView<'w>, _b: TensorView<'w>, _c: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }",
+            "    pub fn forward<'w>(&self, _a: TensorView<'w, i64>, _b: TensorView<'w>, _c: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }",
         "VectorEstimator" => 
             "    pub fn forward<'w>(&self, _a: TensorView<'w>, _b: TensorView<'w>, _c: TensorView<'w>, _d: TensorView<'w>, _e: TensorView<'w>, _f: TensorView<'w>, _g: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }",
         "Vocoder" =>
@@ -144,37 +144,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // List of models to generate
     let models = vec![
-        ("text_encoder.onnx", "TextEncoder", vec![]),
-        ("duration_predictor.onnx", "DurationPredictor", vec![]),
-        ("vector_estimator.onnx", "VectorEstimator", vec![]),
-        ("vocoder.onnx", "Vocoder", vec![]),
+        ("text_encoder.onnx", "TextEncoder"),
+        ("duration_predictor.onnx", "DurationPredictor"),
+        ("vector_estimator.onnx", "VectorEstimator"),
+        ("vocoder.onnx", "Vocoder"),
     ];
 
-    for (model_file, class_name, custom_methods) in models {
-        println!("cargo:rerun-if-changed={}", model_file);
-
-        let model_path = Path::new(model_file);
-
-        if !model_path.exists() {
-            println!("cargo:warning=Model file not found: {}, generating stub", model_file);
-            generate_custom_stub(class_name, output_dir, &format!("Model file not found: {}", model_file))?;
+    for (onnx_name, class_name) in models {
+        let onnx_path = Path::new(onnx_name);
+        if !onnx_path.exists() {
+            println!("cargo:warning=ONNX file not found: {}", onnx_name);
+            generate_custom_stub(class_name, output_dir, &format!("{} not found", onnx_name))?;
             continue;
         }
 
-        if !need_regenerate(class_name, output_dir, model_file) && !should_force_regenerate() {
-            continue;
-        }
-
-        println!("cargo:warning=Generating code for model: {}", class_name);
-        match generate_model_code(model_path, class_name, output_dir, &custom_methods) {
-            Ok(()) => {
-                println!("cargo:warning=Code generation successful for {}", class_name);
-            }
-            Err(e) => {
-                println!("cargo:warning=Code generation failed for {}: {}", class_name, e);
-                println!("cargo:warning=Generating stub implementation");
-                generate_custom_stub(class_name, output_dir, &format!("Code generation failed: {}", e))?;
-            }
+        println!("cargo:warning=Generating code for {}...", class_name);
+        if let Err(e) = generate_model_code(onnx_path, class_name, output_dir, &[]) {
+            println!("cargo:warning=Failed to generate code for {}: {}", class_name, e);
+            generate_custom_stub(class_name, output_dir, &e.to_string())?;
         }
     }
 

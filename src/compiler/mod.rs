@@ -840,7 +840,11 @@ impl Compiler {
         )?;
         writeln!(
             &mut code,
-            "            i64_vec.push(i64::from_le_bytes(bytes));"
+            "            let val = i64::from_le_bytes(bytes);"
+        )?;
+        writeln!(
+            &mut code,
+            "            i64_vec.push(val);"
         )?;
         writeln!(&mut code, "        }}")?;
         writeln!(

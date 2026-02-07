@@ -99,8 +99,16 @@ pub(crate) fn handle_math_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::io
         )?,
         "Equal" => {
             // Equal can work with both f32 and i64
-            let is_i64 = ctx.var_types.get(&ctx.outputs[0]).map(|t| t == "i64").unwrap_or(false) ||
-                         ctx.var_types.get(&ctx.inputs[0]).map(|t| t == "i64").unwrap_or(false);
+            let is_i64 = ctx
+                .var_types
+                .get(&ctx.outputs[0])
+                .map(|t| t == "i64")
+                .unwrap_or(false)
+                || ctx
+                    .var_types
+                    .get(&ctx.inputs[0])
+                    .map(|t| t == "i64")
+                    .unwrap_or(false);
             if is_i64 {
                 writeln!(
                     w,
@@ -116,8 +124,16 @@ pub(crate) fn handle_math_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::io
             }
         }
         "Less" => {
-            let is_i64 = ctx.var_types.get(&inputs[0]).map(|t| t == "i64").unwrap_or(false)
-                || ctx.var_types.get(&inputs[1]).map(|t| t == "i64").unwrap_or(false);
+            let is_i64 = ctx
+                .var_types
+                .get(&inputs[0])
+                .map(|t| t == "i64")
+                .unwrap_or(false)
+                || ctx
+                    .var_types
+                    .get(&inputs[1])
+                    .map(|t| t == "i64")
+                    .unwrap_or(false);
             if is_i64 {
                 writeln!(
                     w,
@@ -174,6 +190,38 @@ pub(crate) fn handle_math_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::io
                 tab, outputs[0], inputs[0], axes, keepdims, buf_expr
             )?;
         }
+        "ReduceMax" => {
+            let axes = if ctx.node.input.len() > 1 && !ctx.node.input[1].is_empty() {
+                let name = &ctx.node.input[1];
+                if let Some((ints, _)) = ctx.int64_map.get(name) {
+                    format!("&{:?}", ints)
+                } else {
+                    format!("&lele::kernels::to_i64_vec(&{})", inputs[1])
+                }
+            } else {
+                let axes_attr = ctx
+                    .node
+                    .attribute
+                    .iter()
+                    .find(|a| a.name == "axes")
+                    .map(|a| a.ints.clone())
+                    .unwrap_or(vec![]);
+                format!("&{:?}", axes_attr)
+            };
+            let keepdims = ctx
+                .node
+                .attribute
+                .iter()
+                .find(|a| a.name == "keepdims")
+                .map(|a| a.i)
+                .unwrap_or(1)
+                != 0;
+            writeln!(
+                w,
+                "{}let {} = lele::kernels::reduce_max(&{}, {}, {}, {});",
+                tab, outputs[0], inputs[0], axes, keepdims, buf_expr
+            )?;
+        }
         "ReduceMean" => {
             let axes = ctx
                 .node
@@ -197,9 +245,21 @@ pub(crate) fn handle_math_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::io
             )?;
         }
         "Range" => {
-            let is_i64 = ctx.var_types.get(&inputs[0]).map(|t| t == "i64").unwrap_or(false)
-                || ctx.var_types.get(&inputs[1]).map(|t| t == "i64").unwrap_or(false)
-                || ctx.var_types.get(&inputs[2]).map(|t| t == "i64").unwrap_or(false);
+            let is_i64 = ctx
+                .var_types
+                .get(&inputs[0])
+                .map(|t| t == "i64")
+                .unwrap_or(false)
+                || ctx
+                    .var_types
+                    .get(&inputs[1])
+                    .map(|t| t == "i64")
+                    .unwrap_or(false)
+                || ctx
+                    .var_types
+                    .get(&inputs[2])
+                    .map(|t| t == "i64")
+                    .unwrap_or(false);
             if is_i64 {
                 writeln!(w, "{}let mut buf_{} = Vec::<i64>::new();", tab, outputs[0])?;
                 writeln!(
@@ -233,8 +293,16 @@ pub(crate) fn handle_math_ops(ctx: &mut OpContext, w: &mut dyn Write) -> std::io
             )?;
         }
         "Greater" => {
-            let is_i64 = ctx.var_types.get(&inputs[0]).map(|t| t == "i64").unwrap_or(false)
-                || ctx.var_types.get(&inputs[1]).map(|t| t == "i64").unwrap_or(false);
+            let is_i64 = ctx
+                .var_types
+                .get(&inputs[0])
+                .map(|t| t == "i64")
+                .unwrap_or(false)
+                || ctx
+                    .var_types
+                    .get(&inputs[1])
+                    .map(|t| t == "i64")
+                    .unwrap_or(false);
             if is_i64 {
                 writeln!(
                     w,

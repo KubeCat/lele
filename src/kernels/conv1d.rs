@@ -793,7 +793,39 @@ unsafe fn conv1d_direct_k3_t4_oc4_neon(
         }
 
         // Remainder OC Loop... (If OutChannels not div by 4)
-        // Silero OCs are 64, 128. Always div by 4.
+        while oc < out_channels {
+            let w_base = weights.add(oc * w_stride_oc);
+            let out_ptr = out_base.add(oc * out_stride_ch);
+
+            for t in 0..output_len {
+                let mut sum = 0.0;
+                for ic in 0..in_channels {
+                    let w_ptr = w_base.add(ic * 3);
+                    let in_ptr_row = in_base.add(ic * in_stride_ch);
+
+                    let idx0 = (t as isize) * (stride as isize) - (padding as isize);
+                    if idx0 >= 0 && idx0 < input_len as isize {
+                        sum += *in_ptr_row.add(idx0 as usize) * *w_ptr;
+                    }
+                    let idx1 = idx0 + 1;
+                    if idx1 >= 0 && idx1 < input_len as isize {
+                        sum += *in_ptr_row.add(idx1 as usize) * *w_ptr.add(1);
+                    }
+                    let idx2 = idx0 + 2;
+                    if idx2 >= 0 && idx2 < input_len as isize {
+                        sum += *in_ptr_row.add(idx2 as usize) * *w_ptr.add(2);
+                    }
+                }
+                if let Some(b_ptr) = bias {
+                    sum += *b_ptr.add(oc);
+                }
+                if relu {
+                    sum = sum.max(0.0);
+                }
+                *out_ptr.add(t) = sum;
+            }
+            oc += 1;
+        }
     }
 }}
 

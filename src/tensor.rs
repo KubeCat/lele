@@ -94,3 +94,31 @@ impl<'a> TensorView<'a, f32> {
         TensorView::from_owned(u8_vec, self.shape.to_vec())
     }
 }
+
+pub trait IntoLogits<'a, T>
+where
+    T: Clone + std::fmt::Debug,
+    [T]: ToOwned<Owned = Vec<T>>,
+{
+    fn into_logits(self) -> TensorView<'a, T>;
+}
+
+impl<'a, T> IntoLogits<'a, T> for TensorView<'a, T>
+where
+    T: Clone + std::fmt::Debug,
+    [T]: ToOwned<Owned = Vec<T>>,
+{
+    fn into_logits(self) -> TensorView<'a, T> {
+        self
+    }
+}
+
+impl<'a, T, U> IntoLogits<'a, T> for (TensorView<'a, T>, U)
+where
+    T: Clone + std::fmt::Debug,
+    [T]: ToOwned<Owned = Vec<T>>,
+{
+    fn into_logits(self) -> TensorView<'a, T> {
+        self.0
+    }
+}

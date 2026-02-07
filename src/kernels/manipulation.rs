@@ -232,7 +232,7 @@ pub fn pad<'b, 'a, T: Clone + Copy + std::fmt::Debug>(
     input: &TensorView<'b, T>,
     pads: &[i64],
     constant_value: Option<&TensorView<'b, T>>,
-    _mode: &str,
+    mode: &str,
     out: &'a mut Vec<T>,
 ) -> TensorView<'a, T> {
     let p = pads.iter().map(|&x| x as usize).collect::<Vec<_>>();
@@ -253,21 +253,22 @@ pub fn pad<'b, 'a, T: Clone + Copy + std::fmt::Debug>(
     unsafe {
         out.set_len(total);
     }
-    let fill_val = if let Some(cv) = constant_value {
+    // For constant mode: use provided constant_value or default to 0 (per ONNX spec)
+    let fill_val: T = if let Some(cv) = constant_value {
         if !cv.data.is_empty() {
             cv.data[0]
         } else {
-            // We need a way to get a default T.
-            // Since T is Copy and usually numeric in ML,
-            // but we don't have Default bound here.
-            // Let's assume input has at least one element or we use first element of input if fill_val missing?
-            // Actually most ONNX Pad constant_value is 0.
-            input.data[0]
+            // ONNX default constant value is 0
+            unsafe { std::mem::zeroed() }
         }
     } else {
-        input.data[0]
+        // ONNX default constant value is 0
+        unsafe { std::mem::zeroed() }
     };
+
+    // First copy input data into correct position, then handle padding
     out.fill(fill_val);
+    // Copy input data into the center
     if rank == 1 {
         let start = p[0];
         out[start..start + input.shape[0]].copy_from_slice(&input.data);
@@ -312,7 +313,62 @@ pub fn pad<'b, 'a, T: Clone + Copy + std::fmt::Debug>(
     } else {
         panic!("Pad: Rank {} not fully implemented", rank);
     }
+    // For edge mode, replicate edge values into padding regions
+    if mode == "edge" {
+        pad_edge_inplace(out, &input.shape, &new_shape, &p, rank);
+    }
     TensorView::from_slice(out, new_shape)
+}
+
+/// Fill padding regions with edge (nearest) values for "edge" mode.
+/// `out` already has the input data copied into the center region.
+fn pad_edge_inplace<T: Clone + Copy>(
+    out: &mut [T],
+    input_shape: &[usize],
+    new_shape: &[usize],
+    p: &[usize],
+    rank: usize,
+) {
+    // General n-dimensional edge padding via coordinate mapping
+    let total: usize = new_shape.iter().product();
+    let strides = utils::compute_strides(new_shape);
+
+    // For each output element, clamp coordinates to the input range
+    // to find the nearest edge value
+    let mut coords = vec![0usize; rank];
+    for idx in 0..total {
+        // Check if this position is in the center (already filled)
+        let mut in_center = true;
+        for d in 0..rank {
+            if coords[d] < p[d] || coords[d] >= p[d] + input_shape[d] {
+                in_center = false;
+                break;
+            }
+        }
+        if !in_center {
+            // Clamp coordinates to input region and read that value
+            let mut src_idx = 0;
+            for d in 0..rank {
+                let clamped = if coords[d] < p[d] {
+                    p[d]
+                } else if coords[d] >= p[d] + input_shape[d] {
+                    p[d] + input_shape[d] - 1
+                } else {
+                    coords[d]
+                };
+                src_idx += clamped * strides[d];
+            }
+            out[idx] = out[src_idx];
+        }
+        // Advance coordinates
+        for d in (0..rank).rev() {
+            coords[d] += 1;
+            if coords[d] < new_shape[d] {
+                break;
+            }
+            coords[d] = 0;
+        }
+    }
 }
 pub fn gather<'b, 'a, T, I>(
     data: &TensorView<'b, T>,

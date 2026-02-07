@@ -1,7 +1,6 @@
 use crate::kernels::utils;
 use crate::tensor::TensorView;
 use std::borrow::Cow;
-use std::simd::StdFloat;
 
 pub trait ElementOps: Copy + PartialOrd + PartialEq + std::fmt::Debug + Sized + 'static {
     fn constant_min() -> Self;
@@ -150,14 +149,16 @@ where
     }
 }
 
-fn broadcast_binary_op_i64_to_f32<'b, 'a, F>(
-    a: &TensorView<'b, i64>,
-    b: &TensorView<'b, i64>,
-    output_buf: &'a mut Vec<f32>,
+fn broadcast_binary_op_to<'b, 'a, T, U, F>(
+    a: &TensorView<'b, T>,
+    b: &TensorView<'b, T>,
+    output_buf: &'a mut Vec<U>,
     op: F,
-) -> TensorView<'a>
+) -> TensorView<'a, U>
 where
-    F: Fn(i64, i64) -> f32,
+    T: Clone + Copy + std::fmt::Debug,
+    U: Clone + Copy + std::fmt::Debug,
+    F: Fn(T, T) -> U,
 {
     let out_shape = utils::broadcast_shapes(&a.shape, &b.shape).expect("Shapes not broadcastable");
     let numel = out_shape.iter().product::<usize>();
@@ -715,6 +716,90 @@ pub fn reduce_sum<'b, 'a>(
         shape: Cow::Owned(out_shape),
     }
 }
+
+pub fn reduce_max<'b, 'a, T>(
+    input: &TensorView<'b, T>,
+    axes: &[i64],
+    keepdims: bool,
+    out: &'a mut Vec<T>,
+) -> TensorView<'a, T>
+where
+    T: ElementOps,
+{
+    let dims = input.dim();
+    let mut resolved_axes: Vec<usize> = axes
+        .iter()
+        .map(|&x| {
+            if x < 0 {
+                (dims as i64 + x) as usize
+            } else {
+                x as usize
+            }
+        })
+        .collect();
+    resolved_axes.sort();
+    resolved_axes.dedup();
+    let mut out_shape = Vec::new();
+    let mut reduce_mask = vec![false; dims];
+    for &ax in &resolved_axes {
+        reduce_mask[ax] = true;
+    }
+    for i in 0..dims {
+        if !reduce_mask[i] {
+            out_shape.push(input.shape[i]);
+        } else if keepdims {
+            out_shape.push(1);
+        }
+    }
+    let out_numel = out_shape.iter().product::<usize>();
+    if out.len() != out_numel {
+        out.resize(out_numel, T::constant_min());
+    }
+    out.fill(T::constant_min());
+    let real_out_strides = utils::compute_strides(&out_shape);
+    let mut input_to_out_strides = vec![0; dims];
+    let mut out_dim_idx = 0;
+    for i in 0..dims {
+        if reduce_mask[i] {
+            input_to_out_strides[i] = 0;
+            if keepdims {
+                out_dim_idx += 1;
+            }
+        } else {
+            input_to_out_strides[i] = real_out_strides[out_dim_idx];
+            out_dim_idx += 1;
+        }
+    }
+    let mut coords = vec![0; dims];
+    let total_elems = input.data.len();
+    let i_slice = &input.data;
+    let o_slice = out.as_mut_slice();
+    for i in 0..total_elems {
+        let val = unsafe { *i_slice.get_unchecked(i) };
+        let mut out_off = 0;
+        for d in 0..dims {
+            out_off += coords[d] * input_to_out_strides[d];
+        }
+        unsafe {
+            let p = o_slice.get_unchecked_mut(out_off);
+            if val > *p {
+                *p = val;
+            }
+        }
+        for d in (0..dims).rev() {
+            coords[d] += 1;
+            if coords[d] < input.shape[d] {
+                break;
+            }
+            coords[d] = 0;
+        }
+    }
+    TensorView {
+        data: Cow::Borrowed(out),
+        shape: Cow::Owned(out_shape),
+    }
+}
+
 pub fn clip<'b, 'a, T: ElementOps, U: ElementOps, V: ElementOps>(
     input: &TensorView<'b, T>,
     min: Option<&TensorView<U>>,
@@ -869,12 +954,12 @@ pub fn less<'b, 'a>(
 ) -> TensorView<'a> {
     broadcast_binary_op(a, b, out, |x, y| if x < y { 1.0 } else { 0.0 })
 }
-pub fn less_i64<'b, 'a>(
-    a: &TensorView<'b, i64>,
-    b: &TensorView<'b, i64>,
-    out: &'a mut Vec<f32>,
-) -> TensorView<'a> {
-    broadcast_binary_op_i64_to_f32(a, b, out, |x, y| if x < y { 1.0 } else { 0.0 })
+pub fn less_i64<'b, 'a, T: ElementOps>(
+    a: &TensorView<'b, T>,
+    b: &TensorView<'b, T>,
+    out: &'a mut Vec<i64>,
+) -> TensorView<'a, i64> {
+    broadcast_binary_op_to(a, b, out, |x, y| if x < y { 1 } else { 0 })
 }
 pub fn expand<'b, 'a, T: Clone + Copy + std::fmt::Debug>(
     input: &TensorView<'b, T>,
