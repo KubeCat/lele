@@ -272,7 +272,7 @@ pub fn dynamic_quantize_linear<'a, 'b>(
     #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
     {
         let len = x.data.len();
-        
+
         let mut min_val = f32::MAX;
         let mut max_val = f32::MIN;
 

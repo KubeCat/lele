@@ -13,7 +13,8 @@ fn generate_custom_stub(
     let weights_path = output_dir.join(format!("{}_weights.bin", class_name.to_lowercase()));
 
     // Common imports
-    let mut code = String::from(r#"
+    let mut code = String::from(
+        r#"
 use lele::tensor::TensorView;
 use std::marker::PhantomData;
 
@@ -27,20 +28,26 @@ impl<'a> CLASSNAME<'a> {
     pub fn new(_weights: &'a [u8]) -> Self {
         panic!("Model is not available: ERROR_MSG");
     }
-"#);
+"#,
+    );
 
     // Customize forward method based on main.rs usage
     let forward_sig = match class_name {
-        "DurationPredictor" | "TextEncoder" => 
-            "    pub fn forward<'w>(&self, _a: TensorView<'w>, _b: TensorView<'w>, _c: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }",
-        "VectorEstimator" => 
-            "    pub fn forward<'w>(&self, _a: TensorView<'w>, _b: TensorView<'w>, _c: TensorView<'w>, _d: TensorView<'w>, _e: TensorView<'w>, _f: TensorView<'w>, _g: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }",
-        "Vocoder" =>
-             "    pub fn forward<'w>(&self, _a: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }",
+        "DurationPredictor" | "TextEncoder" => {
+            "    pub fn forward<'w>(&self, _a: TensorView<'w, i64>, _b: TensorView<'w>, _c: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }"
+        }
+        "VectorEstimator" => {
+            "    pub fn forward<'w>(&self, _a: TensorView<'w>, _b: TensorView<'w>, _c: TensorView<'w>, _d: TensorView<'w>, _e: TensorView<'w>, _f: TensorView<'w>, _g: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }"
+        }
+        "Vocoder" => {
+            "    pub fn forward<'w>(&self, _a: TensorView<'w>) -> TensorView<'static> { panic!(\"Model not available\") }"
+        }
         _ => "",
     };
 
-    code = code.replace("CLASSNAME", class_name).replace("ERROR_MSG", error_msg);
+    code = code
+        .replace("CLASSNAME", class_name)
+        .replace("ERROR_MSG", error_msg);
     code.push_str(forward_sig);
     code.push_str("\n}\n");
 
@@ -73,7 +80,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for file_spec in files {
                 let path = Path::new(&file_spec.path);
                 if !path.exists() {
-                    println!("cargo:warning=Local model file not found: {}", file_spec.path);
+                    println!(
+                        "cargo:warning=Local model file not found: {}",
+                        file_spec.path
+                    );
                     return Ok(());
                 }
 
@@ -88,11 +98,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        config::ModelSource::HuggingFaceHub { repo, revision, files } => {
-            println!("cargo:warning=Downloading {} files from Hugging Face Hub: {}", files.len(), repo);
+        config::ModelSource::HuggingFaceHub {
+            repo,
+            revision,
+            files,
+        } => {
+            println!(
+                "cargo:warning=Downloading {} files from Hugging Face Hub: {}",
+                files.len(),
+                repo
+            );
 
             for file_spec in files {
-                let dest_name = file_spec.dest.as_ref().map(|s| s.as_str()).unwrap_or(&file_spec.file);
+                let dest_name = file_spec
+                    .dest
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or(&file_spec.file);
                 let dest_path = Path::new(dest_name);
 
                 if dest_path.exists() && !should_force_regenerate() {
@@ -100,9 +122,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                match download_from_hf_hub(repo, &file_spec.file, revision.as_deref(), Some(&get_model_cache_dir())) {
+                match download_from_hf_hub(
+                    repo,
+                    &file_spec.file,
+                    revision.as_deref(),
+                    Some(&get_model_cache_dir()),
+                ) {
                     Ok(cached_path) => {
-                        println!("cargo:warning=Downloaded: {} -> {}", file_spec.file, dest_name);
+                        println!(
+                            "cargo:warning=Downloaded: {} -> {}",
+                            file_spec.file, dest_name
+                        );
                         if cached_path != dest_path {
                             if let Some(parent) = dest_path.parent() {
                                 std::fs::create_dir_all(parent)?;
@@ -124,7 +154,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let dest_path = Path::new(&file_spec.dest);
 
                 if dest_path.exists() && !should_force_regenerate() {
-                    println!("cargo:warning=File already exists, skipping: {}", file_spec.dest);
+                    println!(
+                        "cargo:warning=File already exists, skipping: {}",
+                        file_spec.dest
+                    );
                     continue;
                 }
 
@@ -133,7 +166,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if let Err(e) = download_from_url(&file_spec.url, dest_path) {
-                    println!("cargo:warning=Failed to download from {}: {}", file_spec.url, e);
+                    println!(
+                        "cargo:warning=Failed to download from {}: {}",
+                        file_spec.url, e
+                    );
                     // Continue to let stub generation handle missing files
                 }
             }
@@ -144,37 +180,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // List of models to generate
     let models = vec![
-        ("text_encoder.onnx", "TextEncoder", vec![]),
-        ("duration_predictor.onnx", "DurationPredictor", vec![]),
-        ("vector_estimator.onnx", "VectorEstimator", vec![]),
-        ("vocoder.onnx", "Vocoder", vec![]),
+        ("text_encoder.onnx", "TextEncoder"),
+        ("duration_predictor.onnx", "DurationPredictor"),
+        ("vector_estimator.onnx", "VectorEstimator"),
+        ("vocoder.onnx", "Vocoder"),
     ];
 
-    for (model_file, class_name, custom_methods) in models {
-        println!("cargo:rerun-if-changed={}", model_file);
-
-        let model_path = Path::new(model_file);
-
-        if !model_path.exists() {
-            println!("cargo:warning=Model file not found: {}, generating stub", model_file);
-            generate_custom_stub(class_name, output_dir, &format!("Model file not found: {}", model_file))?;
+    for (onnx_name, class_name) in models {
+        let onnx_path = Path::new(onnx_name);
+        if !onnx_path.exists() {
+            println!("cargo:warning=ONNX file not found: {}", onnx_name);
+            generate_custom_stub(class_name, output_dir, &format!("{} not found", onnx_name))?;
             continue;
         }
 
-        if !need_regenerate(class_name, output_dir, model_file) && !should_force_regenerate() {
-            continue;
-        }
-
-        println!("cargo:warning=Generating code for model: {}", class_name);
-        match generate_model_code(model_path, class_name, output_dir, &custom_methods) {
-            Ok(()) => {
-                println!("cargo:warning=Code generation successful for {}", class_name);
-            }
-            Err(e) => {
-                println!("cargo:warning=Code generation failed for {}: {}", class_name, e);
-                println!("cargo:warning=Generating stub implementation");
-                generate_custom_stub(class_name, output_dir, &format!("Code generation failed: {}", e))?;
-            }
+        println!("cargo:warning=Generating code for {}...", class_name);
+        if let Err(e) = generate_model_code(onnx_path, class_name, output_dir, &[]) {
+            println!(
+                "cargo:warning=Failed to generate code for {}: {}",
+                class_name, e
+            );
+            generate_custom_stub(class_name, output_dir, &e.to_string())?;
         }
     }
 
